@@ -9590,7 +9590,7 @@ function Reservations({
     reservations: i,
     clients: c,
     invoices: s
-  } = e, d = i.filter(e => {
+  } = e, hid = e.hotelId, d = i.filter(e => {
     const t = c.find(t => t.id === e.clientId),
       n = t ? `${t.lastName} ${t.firstName}` : e.clientName || "",
       o = r.find(t => t.id === e.roomId),
@@ -9712,7 +9712,9 @@ function Reservations({
       style: {
         marginLeft: 4
       }
-    }, "⚠️")), React.createElement("td", {
+    }, "⚠️"), e.arrivalTime && React.createElement("div", {
+      style: { fontSize: 10, color: "#4ade80", marginTop: 2 }
+    }, "🕐 Arrivé à ", new Date(e.arrivalTime).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }))), React.createElement("td", {
       style: {
         padding: "10px 12px",
         color: "#e2e8f0"
@@ -9757,7 +9759,15 @@ function Reservations({
         fontSize: 11,
         marginRight: 4
       }
-    }, "Modifier"), React.createElement("button", {
+    }, "Modifier"), "confirmed" === e.status && React.createElement("button", {
+      onClick: () => db.collection("hotels").doc(hid).collection("reservations").doc(e.id).update({ status: "arrived", arrivalTime: new Date().toISOString() }),
+      style: {
+        ...btnStyle("#10b981"),
+        padding: "4px 8px",
+        fontSize: 11,
+        marginRight: 4
+      }
+    }, "✓ Arrivée"), React.createElement("button", {
       onClick: () => t({
         type: "invoice",
         data: {
@@ -9900,7 +9910,7 @@ function Invoices({
   setModal: t,
   user: isUser
 }) {
-  const [a, n] = useState(""), [l, o] = useState("all"), {
+  const [a, n] = useState(""), [l, o] = useState("all"), [showPk, setShowPk] = useState(false), [pkSearch, setPkSearch] = useState(""), {
     reservations: r,
     clients: i,
     rooms: c,
@@ -9912,6 +9922,13 @@ function Invoices({
       c = (e.total || 0) - (e.paid || 0);
     return o && ("all" === l || "unpaid" === l && c > 0 || "paid" === l && c <= 0)
   }).sort((e, t) => t.date.localeCompare(e.date)), m = s.reduce((e, t) => e + (t.paid || 0), 0), p = s.reduce((e, t) => e + Math.max(0, (t.total || 0) - (t.paid || 0)), 0), isAdmin = "admin" === isUser.role;
+  const resasSansFacture = r.filter(resa => "cancelled" !== resa.status && !s.find(inv => inv.reservationId === resa.id));
+  const pkFiltered = resasSansFacture.filter(resa => {
+    const cl = i.find(cc => cc.id === resa.clientId);
+    const nom = cl ? `${cl.lastName} ${cl.firstName}` : resa.clientName || "";
+    const room = c.find(rm => rm.id === resa.roomId);
+    return `${nom} ${room?.name||""}`.toLowerCase().includes(pkSearch.toLowerCase());
+  });
   return React.createElement("div", null, isAdmin && React.createElement("div", {
     style: {
       display: "grid",
@@ -10009,7 +10026,32 @@ function Invoices({
     value: "unpaid"
   }, "Non soldées"), React.createElement("option", {
     value: "paid"
-  }, "Soldées"))), React.createElement("div", {
+  }, "Soldées")), React.createElement("button", {
+    onClick: () => { setShowPk(v => !v); setPkSearch(""); },
+    style: btnStyle(showPk ? "#334155" : "#2563eb")
+  }, showPk ? "Annuler" : "+ Nouvelle facture")), showPk && React.createElement("div", {
+    style: { background: "#1e293b", borderRadius: 12, padding: 12, marginBottom: 16, border: "1px solid #334155" }
+  },
+    React.createElement("input", {
+      value: pkSearch,
+      onChange: e => setPkSearch(e.target.value),
+      placeholder: "Rechercher client ou chambre...",
+      style: { ...inputStyle, marginBottom: 8 }
+    }),
+    0 === pkFiltered.length && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Aucune réservation sans facture."),
+    pkFiltered.slice(0, 20).map(resa => {
+      const cl = i.find(cc => cc.id === resa.clientId);
+      const room = c.find(rm => rm.id === resa.roomId);
+      return React.createElement("div", {
+        key: resa.id,
+        onClick: () => { t({ type: "invoice", data: { reservationId: resa.id } }); setShowPk(false); setPkSearch(""); },
+        style: { padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid #0f172a", color: "#e2e8f0", fontSize: 13, display: "flex", justifyContent: "space-between" }
+      },
+        React.createElement("span", null, cl ? `${cl.lastName} ${cl.firstName}` : resa.clientName || "—", " — ", room?.name || "—"),
+        React.createElement("span", { style: { color: "#64748b" } }, fmtDate(resa.checkIn), " → ", fmtDate(resa.checkOut))
+      );
+    })
+  ), React.createElement("div", {
     style: {
       background: "#1e293b",
       borderRadius: 12,
@@ -10070,7 +10112,10 @@ function Invoices({
         padding: "10px 12px",
         color: "#e2e8f0"
       }
-    }, l ? `${l.lastName} ${l.firstName}` : n?.clientName || "-"), React.createElement("td", {
+    }, l ? `${l.lastName} ${l.firstName}` : n?.clientName || "-", n && "cancelled" === n.status && React.createElement("span", {
+    style: { marginLeft: 6, fontSize: 10, color: "#f87171", border: "1px solid #f87171", borderRadius: 4, padding: "1px 5px" },
+    title: "La réservation liée à cette facture a été annulée"
+  }, "⚠️ Résa annulée")), React.createElement("td", {
       style: {
         padding: "10px 12px",
         color: "#94a3b8"
@@ -10144,41 +10189,49 @@ function Dashboard({
   const d = l.filter(e => "chambre" === e.type).length;
   const m = i.filter(e => "chambre" === l.find(t => t.id === e.roomId)?.type).length;
   const p = d > 0 ? Math.round(m / d * 100) : 0;
-  // --- Bloc CA admin : basé sur séjours dont checkOut <= fin période et checkIn >= début période ---
+  // --- Bloc CA admin : encaissements comptés selon la DATE RÉELLE DE PAIEMENT ---
   const pFrom = periodeMode === "mois" ? defaultFrom : periodeFrom;
   const pTo = periodeMode === "mois" ? defaultTo : periodeTo;
-  // Séjours de la période (checkIn dans [pFrom, pTo] ET checkOut <= pTo+1)
-  const resasPeriode = a.filter(e => "cancelled" !== e.status && e.checkIn >= pFrom && e.checkOut <= addDays(pTo, 1));
-  // Factures liées à ces séjours
-  const invPeriode = o.filter(inv => resasPeriode.some(r => r.id === inv.reservationId));
-  // Acomptes reçus = somme des deposits des réservations de la période
-  const acomptesPeriode = a.filter(r => (r.deposit || 0) > 0 && r.depositDate && r.depositDate >= pFrom && r.depositDate <= pTo).reduce((s, r) => s + (r.deposit || 0), 0);
-  // Total encaissé sur factures de la période (paid)
-  const encaissePeriode = invPeriode.reduce((s, i) => s + (i.paid || 0), 0);
-  // Soldes = encaissé hors acomptes déjà inclus dans les paiements de facture
-  // (on affiche encaissé total - acomptes, pour avoir uniquement les soldes)
-  const soldesPeriode = Math.max(0, encaissePeriode - acomptesPeriode);
-  // Reste à encaisser = séjours période sans facture soldée
-  // = somme (total_attendu - paid) pour les séjours de la période
-  // Total attendu d'un séjour = inv.total si facture existe, sinon rate*nuits
-  const resteAPeriode = resasPeriode.reduce((acc, resa) => {
+  // Fonction commune : encaissements (acomptes/soldes) dont payment.date tombe dans [from,to], sur TOUTES les factures (hors résas annulées)
+  const calcEncaissements = (from, to) => {
+    let acomptes = 0, soldes = 0;
+    o.forEach(inv => {
+      const resa = a.find(rr => rr.id === inv.reservationId);
+      if (resa && "cancelled" === resa.status) return;
+      (inv.payments || []).forEach(pmt => {
+        if (pmt.date >= from && pmt.date <= to) {
+          if ("Acompte" === pmt.note) acomptes += (pmt.amount || 0);
+          else soldes += (pmt.amount || 0);
+        }
+      });
+    });
+    return { acomptes, soldes, total: acomptes + soldes };
+  };
+  const encPeriode = calcEncaissements(pFrom, pTo);
+  const acomptesPeriode = encPeriode.acomptes;
+  const soldesPeriode = encPeriode.soldes;
+  const encaissePeriode = encPeriode.total;
+  const encJour = calcEncaissements(r, r);
+  const acomptesJour = encJour.acomptes;
+  const soldesJour = encJour.soldes;
+  const encaisseJour = encJour.total;
+  // Reste à encaisser : INDÉPENDANT de la période choisie — tant qu'une facture n'est pas soldée, elle reste due
+  const resteResas = a.filter(resa => {
+    if ("cancelled" === resa.status) return false;
     const inv = o.find(i => i.reservationId === resa.id);
     if (inv) {
-      return acc + Math.max(0, (inv.total || 0) - (inv.paid || 0));
+      const paye = (inv.payments || []).reduce((s, p) => s + (p.amount || 0), 0);
+      return (inv.total || 0) - paye > 0;
     }
-    // Pas de facture : montant attendu = rate * nuits - deposit
     const nuits = daysBetween(resa.checkIn, resa.checkOut);
-    return acc + Math.max(0, (resa.rate || 0) * nuits - (resa.deposit || 0));
-  }, 0);
-  // --- Bloc CA réceptionniste : jour uniquement ---
-  const resasJour = a.filter(e => "cancelled" !== e.status && e.checkIn <= r && e.checkOut > r);
-  const invJour = o.filter(inv => resasJour.some(r => r.id === inv.reservationId));
-  const acomptesJour = a.filter(rr => (rr.deposit || 0) > 0 && rr.depositDate === r).reduce((s, rr) => s + (rr.deposit || 0), 0);
-  const encaisseJour = invJour.reduce((s, i) => s + (i.paid || 0), 0);
-  const soldesJour = Math.max(0, encaisseJour - acomptesJour);
-  const resteJour = resasJour.reduce((acc, resa) => {
+    return (resa.rate || 0) * nuits - (resa.deposit || 0) > 0;
+  });
+  const resteTotal = resteResas.reduce((acc, resa) => {
     const inv = o.find(i => i.reservationId === resa.id);
-    if (inv) return acc + Math.max(0, (inv.total || 0) - (inv.paid || 0));
+    if (inv) {
+      const paye = (inv.payments || []).reduce((s, p) => s + (p.amount || 0), 0);
+      return acc + Math.max(0, (inv.total || 0) - paye);
+    }
     const nuits = daysBetween(resa.checkIn, resa.checkOut);
     return acc + Math.max(0, (resa.rate || 0) * nuits - (resa.deposit || 0));
   }, 0);
@@ -10417,13 +10470,13 @@ function Dashboard({
       fontWeight: 700,
       color: "#f87171"
     }
-  }, fmt(resteAPeriode), " F"), React.createElement("div", {
+  }, fmt(resteTotal), " F"), React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#475569",
       marginTop: 2
     }
-  }, resasPeriode.length, " séjour", resasPeriode.length !== 1 ? "s" : "")))), !isAdmin && React.createElement("div", {
+  }, resteResas.length, " séjour", resteResas.length !== 1 ? "s" : "")))), !isAdmin && React.createElement("div", {
     style: {
       background: "#1e293b",
       borderRadius: 12,
@@ -10518,13 +10571,13 @@ function Dashboard({
       fontWeight: 700,
       color: "#f87171"
     }
-  }, fmt(resteJour), " F"), React.createElement("div", {
+  }, fmt(resteTotal), " F"), React.createElement("div", {
     style: {
       fontSize: 10,
       color: "#475569",
       marginTop: 2
     }
-  }, resasJour.length, " séjour", resasJour.length !== 1 ? "s" : "")))), React.createElement("div", {
+  }, resteResas.length, " séjour", resteResas.length !== 1 ? "s" : "")))), React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
@@ -10718,6 +10771,7 @@ function ReservationModal({
     })))
   }, [m.roomId, m.rateType, m.checkIn]);
   const I = m.rate * E,
+    capExceeded = h && m.persons > h.capacity,
     z = e => db.collection("hotels").doc(n).collection("reservations").doc(e),
     w = r.filter(e => `${e.lastName} ${e.firstName} ${e.company}`.toLowerCase().includes(f.toLowerCase())).slice(0, 5);
   return React.createElement(Modal, {
@@ -10935,7 +10989,9 @@ function ReservationModal({
       persons: +e.target.value
     }),
     style: inputStyle
-  })), React.createElement("div", null, React.createElement("label", {
+  }), capExceeded && React.createElement("div", {
+    style: { fontSize: 11, color: "#f87171", marginTop: 4 }
+  }, "⚠️ Capacité dépassée (max ", h.capacity, " pers.)")), React.createElement("div", null, React.createElement("label", {
     style: labelStyle
   }, "Source de réservation"), React.createElement("select", {
     value: m.source,
@@ -11269,6 +11325,7 @@ function ReservationModal({
       if (!m.clientId && !m.clientName) return alert("Veuillez sélectionner ou saisir un client");
       if (S) return alert(`Impossible d'enregistrer : cette chambre est déjà réservée par ${x?`${x.lastName} ${x.firstName}`:S.clientName||"un client"} du ${fmtDate(S.checkIn)} au ${fmtDate(S.checkOut)}. Choisissez une autre chambre ou d'autres dates.`);
       if (k) return alert(`Impossible d'enregistrer : cette chambre est bloquée pour maintenance du ${fmtDate(k.from)} au ${fmtDate(k.to)}${k.reason?` (${k.reason})`:""}.`);
+      if (capExceeded) return alert(`Impossible d'enregistrer : ${m.persons} personnes dépasse la capacité de ${h.name} (${h.capacity} max).`);
       R(!0);
       try {
         await z(m.id).set(m), a()
@@ -11278,9 +11335,9 @@ function ReservationModal({
         R(!1)
       }
     },
-    disabled: b || !!S || !!k,
-    style: btnStyle(S || k || b ? "#475569" : "#2563eb"),
-    title: S ? "Résolvez le conflit de réservation avant d'enregistrer" : k ? "Chambre bloquée pour maintenance" : ""
+    disabled: b || !!S || !!k || capExceeded,
+    style: btnStyle(S || k || capExceeded || b ? "#475569" : "#2563eb"),
+    title: S ? "Résolvez le conflit de réservation avant d'enregistrer" : k ? "Chambre bloquée pour maintenance" : capExceeded ? "Capacité de la chambre dépassée" : ""
   }, b ? "Enregistrement…" : "Enregistrer")))
 }
 
@@ -11582,7 +11639,7 @@ function InvoiceModal({
     u(!0);
     try {
       return await (t = e.id, db.collection("hotels").doc(n).collection("invoices").doc(t)).set(e), c && await (e => db.collection("hotels").doc(n).collection("reservations").doc(e))(c.id).update({
-        status: v >= E ? "paid" : "invoiced"
+        status: E > 0 && v >= E ? "paid" : "invoiced"
       }), e
     } finally {
       u(!1)
