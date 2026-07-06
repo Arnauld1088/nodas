@@ -10172,7 +10172,7 @@ function Dashboard({
     clients: n,
     rooms: l,
     invoices: o
-  } = e, r = today(), isAdmin = "admin" === t.role;
+  } = e, hid = e.hotelId, r = today(), isAdmin = "admin" === t.role;
   // Période admin : mois courant par défaut, ou plage libre
   const [periodeMode, setPeriodeMode] = useState("mois"); // "mois"|"libre"
   const nowM = (new Date).getMonth(),
@@ -10649,7 +10649,7 @@ function Dashboard({
       marginBottom: 6,
       fontWeight: 600
     }
-  }, "📥 Arrivées (", c.length, ")"), c.slice(0, 3).map(e => {
+  }, "📥 Arrivées (", c.length, ")"), c.map(e => {
     const t = n.find(t => t.id === e.clientId),
       a = l.find(t => t.id === e.roomId);
     return React.createElement("div", {
@@ -10657,10 +10657,24 @@ function Dashboard({
       style: {
         fontSize: 12,
         color: "#e2e8f0",
-        padding: "4px 0",
-        borderBottom: "1px solid #334155"
+        padding: "5px 0",
+        borderBottom: "1px solid #334155",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 6
       }
-    }, t ? `${t.lastName} ${t.firstName}` : e.clientName, " — ", a?.name);
+    },
+      React.createElement("span", null,
+        e.isVip && "⭐", e.alerts?.length > 0 && "⚠️ ",
+        t ? `${t.lastName} ${t.firstName}` : e.clientName, " — ", a?.name,
+        t?.phone && React.createElement("span", { style: { color: "#64748b" } }, " · ", t.phone),
+        " · ", e.persons, " pers."
+      ),
+      e.arrivalTime
+        ? React.createElement("span", { style: { color: "#4ade80", fontSize: 11 } }, "✓ ", new Date(e.arrivalTime).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }))
+        : React.createElement("span", { style: { color: "#f59e0b", fontSize: 11 } }, "attendu")
+    );
   }), React.createElement("div", {
     style: {
       fontSize: 12,
@@ -10668,18 +10682,32 @@ function Dashboard({
       margin: "10px 0 6px",
       fontWeight: 600
     }
-  }, "📤 Départs (", s.length, ")"), s.slice(0, 3).map(e => {
+  }, "📤 Départs (", s.length, ")"), s.map(e => {
     const t = n.find(t => t.id === e.clientId),
-      a = l.find(t => t.id === e.roomId);
+      a = l.find(t => t.id === e.roomId),
+      inv = o.find(i => i.reservationId === e.id),
+      due = inv ? Math.max(0, (inv.total || 0) - ((inv.payments || []).reduce((s, p) => s + (p.amount || 0), 0))) : null;
     return React.createElement("div", {
       key: e.id,
       style: {
         fontSize: 12,
         color: "#e2e8f0",
-        padding: "4px 0",
-        borderBottom: "1px solid #334155"
+        padding: "5px 0",
+        borderBottom: "1px solid #334155",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 6
       }
-    }, t ? `${t.lastName} ${t.firstName}` : e.clientName, " — ", a?.name);
+    },
+      React.createElement("span", null,
+        e.isVip && "⭐", e.alerts?.length > 0 && "⚠️ ",
+        t ? `${t.lastName} ${t.firstName}` : e.clientName, " — ", a?.name
+      ),
+      due !== null && due > 0
+        ? React.createElement("span", { style: { color: "#f87171", fontSize: 11 } }, fmt(due), " F dû")
+        : React.createElement("span", { style: { color: "#4ade80", fontSize: 11 } }, "soldé")
+    );
   }), (() => {
     const navJour = a.filter(rr => rr.navette?.actif && (rr.checkIn === r || rr.checkOut === r) && "cancelled" !== rr.status);
     if (!navJour.length) return null;
@@ -10693,28 +10721,30 @@ function Dashboard({
     }, "🚌 Navettes du jour (", navJour.length, ")"), navJour.map(e => {
       const cl = n.find(t => t.id === e.clientId),
         rm = l.find(t => t.id === e.roomId);
-      const sens = e.checkIn === r ? "↗ Arrivée" : "↘ Départ";
+      const legs = [];
+      if (e.checkIn === r && ("aller" === e.navette.type || "aller-retour" === e.navette.type) && e.navette.aller) legs.push({ key: "aller", label: "↗ Arrivée", data: e.navette.aller });
+      if (e.checkOut === r && ("retour" === e.navette.type || "aller-retour" === e.navette.type) && e.navette.retour) legs.push({ key: "retour", label: "↘ Départ", data: e.navette.retour });
+      if (!legs.length) return null;
       return React.createElement("div", {
         key: e.id,
-        style: {
-          fontSize: 12,
-          color: "#e2e8f0",
-          padding: "4px 0",
-          borderBottom: "1px solid #334155",
-          display: "flex",
-          flexDirection: "column",
-          gap: 2
-        }
-      }, React.createElement("span", {
-        style: {
-          fontWeight: 600
-        }
-      }, sens, " · ", cl ? `${cl.lastName} ${cl.firstName}` : e.clientName, " — ", rm?.name), React.createElement("span", {
-        style: {
-          color: "#a78bfa",
-          fontSize: 11
-        }
-      }, "🕐 ", e.navette.heure || "—", " · ", e.navette.lieu || "—", " · ", e.navette.type));
+        style: { padding: "6px 0", borderBottom: "1px solid #334155" }
+      }, legs.map(leg => React.createElement("div", {
+        key: leg.key,
+        style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }
+      },
+        React.createElement("input", {
+          type: "checkbox", checked: !!leg.data.effectue,
+          onChange: ev => db.collection("hotels").doc(hid).collection("reservations").doc(e.id).update({
+            navette: { ...e.navette, [leg.key]: { ...leg.data, effectue: ev.target.checked } }
+          })
+        }),
+        React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
+          React.createElement("span", { style: { fontSize: 12, color: "#e2e8f0", fontWeight: 600, textDecoration: leg.data.effectue ? "line-through" : "none" } },
+            leg.label, " · ", cl ? `${cl.lastName} ${cl.firstName}` : e.clientName, " — ", rm?.name),
+          React.createElement("span", { style: { color: "#a78bfa", fontSize: 11 } },
+            "🕐 ", leg.data.heure || "—", " · ", leg.data.lieu || "—")
+        )
+      )));
     }), );
   })())));
 }
@@ -10757,8 +10787,16 @@ function ReservationModal({
     navette: {
       actif: t.navette?.actif || false,
       type: t.navette?.type || "aller-retour",
-      heure: t.navette?.heure || "",
-      lieu: t.navette?.lieu || ""
+      aller: {
+        heure: t.navette?.aller?.heure || (("aller" === t.navette?.type || "aller-retour" === t.navette?.type) ? (t.navette?.heure || "") : ""),
+        lieu: t.navette?.aller?.lieu || (("aller" === t.navette?.type || "aller-retour" === t.navette?.type) ? (t.navette?.lieu || "") : ""),
+        effectue: t.navette?.aller?.effectue || false
+      },
+      retour: {
+        heure: t.navette?.retour?.heure || ("retour" === t.navette?.type ? (t.navette?.heure || "") : ""),
+        lieu: t.navette?.retour?.lieu || ("retour" === t.navette?.type ? (t.navette?.lieu || "") : ""),
+        effectue: t.navette?.retour?.effectue || false
+      }
     }
   }), [u, y] = useState(""), [f, g] = useState(""), [b, R] = useState(!1), h = l.find(e => e.id === m.roomId), E = daysBetween(m.checkIn, m.checkOut), v = r.find(e => e.id === m.clientId), S = findRoomConflict(o, m.roomId, m.checkIn, m.checkOut, m.id), x = S ? r.find(e => e.id === S.clientId) : null, k = findMaintenanceConflict(s, m.roomId, m.checkIn, m.checkOut, null), C = getActiveSeason(m.checkIn, c);
   useEffect(() => {
@@ -11033,57 +11071,62 @@ function ReservationModal({
         actif: e.target.checked
       }
     })
-  }), "🚌 Navette"), m.navette.actif && React.createElement("div", {
-    style: {
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr 1fr",
-      gap: 8
-    }
-  }, React.createElement("div", null, React.createElement("label", {
-    style: labelStyle
-  }, "Type"), React.createElement("select", {
-    value: m.navette.type,
-    onChange: e => p({
-      ...m,
-      navette: {
-        ...m.navette,
-        type: e.target.value
-      }
-    }),
-    style: inputStyle
-  }, React.createElement("option", {
-    value: "aller-retour"
-  }, "Aller-Retour"), React.createElement("option", {
-    value: "aller"
-  }, "Aller seulement"), React.createElement("option", {
-    value: "retour"
-  }, "Retour seulement"))), React.createElement("div", null, React.createElement("label", {
-    style: labelStyle
-  }, "Heure"), React.createElement("input", {
-    type: "time",
-    value: m.navette.heure,
-    onChange: e => p({
-      ...m,
-      navette: {
-        ...m.navette,
-        heure: e.target.value
-      }
-    }),
-    style: inputStyle
-  })), React.createElement("div", null, React.createElement("label", {
-    style: labelStyle
-  }, "Lieu / Point de prise en charge"), React.createElement("input", {
-    value: m.navette.lieu,
-    onChange: e => p({
-      ...m,
-      navette: {
-        ...m.navette,
-        lieu: e.target.value
-      }
-    }),
-    placeholder: "Ex: Aéroport, Gare...",
-    style: inputStyle
-  })))), React.createElement("div", {
+  }), "🚌 Navette"), m.navette.actif && React.createElement("div", null,
+    React.createElement("div", { style: { marginBottom: 10 } },
+      React.createElement("label", { style: labelStyle }, "Type"),
+      React.createElement("select", {
+        value: m.navette.type,
+        onChange: e => p({ ...m, navette: { ...m.navette, type: e.target.value } }),
+        style: inputStyle
+      },
+        React.createElement("option", { value: "aller-retour" }, "Aller-Retour"),
+        React.createElement("option", { value: "aller" }, "Aller seulement"),
+        React.createElement("option", { value: "retour" }, "Retour seulement")
+      )
+    ),
+    ("aller" === m.navette.type || "aller-retour" === m.navette.type) && React.createElement("div", {
+      style: { display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "end", marginBottom: 8 }
+    },
+      React.createElement("div", null, React.createElement("label", { style: labelStyle }, "↗ Aller — Heure"),
+        React.createElement("input", {
+          type: "time", value: m.navette.aller.heure,
+          onChange: e => p({ ...m, navette: { ...m.navette, aller: { ...m.navette.aller, heure: e.target.value } } }),
+          style: inputStyle
+        })),
+      React.createElement("div", null, React.createElement("label", { style: labelStyle }, "Lieu"),
+        React.createElement("input", {
+          value: m.navette.aller.lieu, placeholder: "Ex: Aéroport, Gare...",
+          onChange: e => p({ ...m, navette: { ...m.navette, aller: { ...m.navette.aller, lieu: e.target.value } } }),
+          style: inputStyle
+        })),
+      React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#94a3b8", paddingBottom: 8 } },
+        React.createElement("input", {
+          type: "checkbox", checked: m.navette.aller.effectue,
+          onChange: e => p({ ...m, navette: { ...m.navette, aller: { ...m.navette.aller, effectue: e.target.checked } } })
+        }), "Faite")
+    ),
+    ("retour" === m.navette.type || "aller-retour" === m.navette.type) && React.createElement("div", {
+      style: { display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "end" }
+    },
+      React.createElement("div", null, React.createElement("label", { style: labelStyle }, "↘ Retour — Heure"),
+        React.createElement("input", {
+          type: "time", value: m.navette.retour.heure,
+          onChange: e => p({ ...m, navette: { ...m.navette, retour: { ...m.navette.retour, heure: e.target.value } } }),
+          style: inputStyle
+        })),
+      React.createElement("div", null, React.createElement("label", { style: labelStyle }, "Lieu"),
+        React.createElement("input", {
+          value: m.navette.retour.lieu, placeholder: "Ex: Aéroport, Gare...",
+          onChange: e => p({ ...m, navette: { ...m.navette, retour: { ...m.navette.retour, lieu: e.target.value } } }),
+          style: inputStyle
+        })),
+      React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#94a3b8", paddingBottom: 8 } },
+        React.createElement("input", {
+          type: "checkbox", checked: m.navette.retour.effectue,
+          onChange: e => p({ ...m, navette: { ...m.navette, retour: { ...m.navette.retour, effectue: e.target.checked } } })
+        }), "Faite")
+    )
+  )), React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
