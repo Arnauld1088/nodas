@@ -8515,12 +8515,46 @@ const {
 
 function HotelSettings({
   hotelId: e,
-  hotelName: t
+  hotelName: t,
+  logoUrl: lg
 }) {
-  const [a, n] = useState(t), [l, o] = useState(!1), [r, i] = useState(!1);
+  const [a, n] = useState(t), [l, o] = useState(!1), [r, i] = useState(!1), [logoBusy, setLogoBusy] = useState(!1), [logoErr, setLogoErr] = useState("");
   useEffect(() => {
     n(t)
   }, [t]);
+  const onLogoFile = ev => {
+    const file = ev.target.files[0];
+    ev.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) return setLogoErr("Veuillez choisir une image.");
+    setLogoErr(""); setLogoBusy(!0);
+    const reader = new FileReader();
+    reader.onload = ev2 => {
+      const img = new Image();
+      img.onload = async () => {
+        const maxDim = 300;
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/png", 0.85);
+        try {
+          await db.collection("hotels").doc(e).update({ logoUrl: dataUrl });
+        } catch (err) {
+          setLogoErr("Erreur lors de l'enregistrement du logo (image peut-être trop volumineuse).");
+        } finally {
+          setLogoBusy(!1);
+        }
+      };
+      img.src = ev2.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+  const removeLogo = async () => {
+    setLogoBusy(!0);
+    try { await db.collection("hotels").doc(e).update({ logoUrl: "" }); } finally { setLogoBusy(!1); }
+  };
   return React.createElement("div", {
     style: {
       maxWidth: 400
@@ -8562,7 +8596,22 @@ function HotelSettings({
       color: "#4ade80",
       fontSize: 13
     }
-  }, "✓ Enregistré"))
+  }, "✓ Enregistré"), React.createElement("div", {
+    style: { marginTop: 24, paddingTop: 20, borderTop: "1px solid #334155" }
+  },
+    React.createElement("h3", { style: { color: "#94a3b8", fontSize: 14, marginBottom: 12 } }, "Logo (affiché sur les factures)"),
+    lg ? React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 12 } },
+      React.createElement("img", { src: lg, style: { height: 60, background: "#fff", borderRadius: 6, padding: 4 } }),
+      React.createElement("button", { onClick: removeLogo, disabled: logoBusy, style: { ...btnStyle("#7f1d1d"), opacity: logoBusy ? .7 : 1 } }, "Supprimer")
+    ) : React.createElement("div", { style: { color: "#475569", fontSize: 13, marginBottom: 12 } }, "Aucun logo — le nom de l'hôtel sera utilisé seul sur les documents."),
+    React.createElement("label", {
+      style: { ...btnStyle(logoBusy ? "#1e40af" : "#334155"), display: "inline-block", cursor: logoBusy ? "default" : "pointer", opacity: logoBusy ? .7 : 1 }
+    }, logoBusy ? "Traitement…" : "📤 Choisir une image",
+      React.createElement("input", { type: "file", accept: "image/*", style: { display: "none" }, onChange: onLogoFile, disabled: logoBusy })
+    ),
+    logoErr && React.createElement("div", { style: { color: "#f87171", fontSize: 12, marginTop: 8 } }, logoErr),
+    React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginTop: 8 } }, "L'image sera automatiquement redimensionnée (max 300px).")
+  ))
 }
 
 function RoomsSettings({
@@ -8800,6 +8849,37 @@ function RoomsSettings({
       fontSize: 11
     }
   }, "🗑️")))))))
+}
+
+function MenuSettings({
+  hotelId: e,
+  menuItems: t
+}) {
+  const [a, n] = useState(""), [l, o] = useState(""), r = db.collection("hotels").doc(e), i = async () => {
+    a.trim() && l && (await r.update({
+      menuItems: [...(t || []), {
+        id: uid(),
+        name: a.trim(),
+        price: +l || 0
+      }]
+    }), n(""), o(""))
+  };
+  return React.createElement("div", {
+    style: { maxWidth: 460 }
+  }, React.createElement("h3", {
+    style: { color: "#94a3b8", fontSize: 14, marginBottom: 12 }
+  }, "Articles du menu (restaurant)"), (t || []).map(e => React.createElement("div", {
+    key: e.id,
+    style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#0f172a", borderRadius: 8, marginBottom: 6 }
+  }, React.createElement("span", { style: { color: "#e2e8f0" } }, e.name, " — ", fmt(e.price), " F"), React.createElement("button", {
+    onClick: () => (async () => { await r.update({ menuItems: (t || []).filter(m => m.id !== e.id) }) })(),
+    style: { background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 16 }
+  }, "✕"))), 0 === (t || []).length && React.createElement("div", { style: { color: "#475569", fontSize: 13, marginBottom: 8 } }, "Aucun article. Ajoutez votre carte ci-dessous."),
+    React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12 } },
+      React.createElement("input", { value: a, onChange: e => n(e.target.value), placeholder: "Nom de l'article", style: { ...inputStyle, flex: 1 } }),
+      React.createElement("input", { type: "number", value: l, onChange: e => o(e.target.value), placeholder: "Prix F", style: { ...inputStyle, width: 100 } }),
+      React.createElement("button", { onClick: i, style: btnStyle("#2563eb") }, "+ Ajouter")
+    ))
 }
 
 function PaymentsSettings({
@@ -9310,6 +9390,9 @@ function Settings({
     id: "maintenance",
     label: "Maintenance"
   }, {
+    id: "restaurant",
+    label: "Restaurant"
+  }, {
     id: "users",
     label: "Utilisateurs"
   }, {
@@ -9325,7 +9408,8 @@ function Settings({
     }
   }, e.label))), "hotel" === a && React.createElement(HotelSettings, {
     hotelId: e.id,
-    hotelName: e.hotelName
+    hotelName: e.hotelName,
+    logoUrl: e.logoUrl
   }), "rooms" === a && React.createElement(RoomsSettings, {
     hotelId: e.id,
     rooms: e.rooms,
@@ -9340,6 +9424,9 @@ function Settings({
     hotelId: e.id,
     rooms: e.rooms,
     maintenanceBlocks: e.maintenanceBlocks
+  }), "restaurant" === a && React.createElement(MenuSettings, {
+    hotelId: e.id,
+    menuItems: e.menuItems
   }), "users" === a && React.createElement(UsersSettings, {
     user: t
   }), "backup" === a && React.createElement(BackupSettings, {
@@ -9353,13 +9440,19 @@ function Planning({
   hotelData: e,
   setModal: t
 }) {
-  const [a, n] = useState(today()), [l, o] = useState(15), {
+  const [a, n] = useState(today()), [l, o] = useState(15), [hd, setHd] = useState(false), {
     rooms: r,
     reservations: i,
     clients: c
   } = e, s = Array.from({
     length: l
   }, (e, t) => addDays(a, t));
+  const getResaHalf = (roomId, date, half) => i.find(rr => {
+    if (rr.roomId !== roomId || "cancelled" === rr.status) return false;
+    if (date === rr.checkIn) return "PM" === half;
+    if (date === rr.checkOut) return "AM" === half;
+    return date > rr.checkIn && date < rr.checkOut;
+  });
   return React.createElement("div", null, React.createElement("div", {
     style: {
       display: "flex",
@@ -9395,7 +9488,10 @@ function Planning({
       display: "flex",
       gap: 8
     }
-  }, [7, 15, 30].map(e => React.createElement("button", {
+  }, React.createElement("button", {
+    onClick: () => setHd(v => !v),
+    style: btnStyle(hd ? "#7c3aed" : "#334155")
+  }, hd ? "🕐 Demi-journée ✓" : "🕐 Demi-journée"), [7, 15, 30].map(e => React.createElement("button", {
     key: e,
     onClick: () => o(e),
     style: btnStyle(l === e ? "#2563eb" : "#334155")
@@ -9461,6 +9557,7 @@ function Planning({
       background: "#0f172a"
     }
   }, React.createElement("th", {
+    rowSpan: hd ? 2 : 1,
     style: {
       padding: "8px 12px",
       textAlign: "left",
@@ -9479,10 +9576,11 @@ function Planning({
       n = 0 === t.getDay() || 6 === t.getDay();
     return React.createElement("th", {
       key: e,
+      colSpan: hd ? 2 : 1,
       style: {
         padding: "4px 2px",
         textAlign: "center",
-        minWidth: l > 15 ? 28 : 36,
+        minWidth: hd ? (l > 15 ? 48 : 60) : (l > 15 ? 28 : 36),
         color: a ? "#2563eb" : n ? "#f59e0b" : "#94a3b8",
         fontWeight: a ? 700 : 400,
         borderRight: "1px solid #1e293b",
@@ -9493,7 +9591,29 @@ function Planning({
         fontSize: 11
       }
     }, t.getDate()))
-  }))), React.createElement("tbody", null, r.map(a => React.createElement("tr", {
+  })), hd && React.createElement("tr", {
+    style: {
+      background: "#0f172a"
+    }
+  }, s.map(e => React.createElement(React.Fragment, {
+    key: e
+  }, React.createElement("th", {
+    style: {
+      fontSize: 9,
+      fontWeight: 400,
+      color: "#64748b",
+      borderRight: "1px dashed #1e293b",
+      padding: "2px 0"
+    }
+  }, "Matin"), React.createElement("th", {
+    style: {
+      fontSize: 9,
+      fontWeight: 400,
+      color: "#64748b",
+      borderRight: "1px solid #1e293b",
+      padding: "2px 0"
+    }
+  }, "Soir"))))), React.createElement("tbody", null, r.map(a => React.createElement("tr", {
     key: a.id,
     style: {
       borderBottom: "1px solid #0f172a"
@@ -9516,7 +9636,49 @@ function Planning({
       color: "#64748b",
       marginRight: 4
     }
-  }, "espace" === a.type ? "🏢" : "🛏"), a.name), s.map(n => {
+  }, "espace" === a.type ? "🏢" : "🛏"), a.name), hd ? s.map(n => {
+    const halves = ["AM", "PM"].map(half => {
+      const resa = getResaHalf(a.id, n, half);
+      const maint = (e.maintenanceBlocks || []).find(mb => mb.roomId === a.id && mb.from <= n && mb.to > n);
+      const isStart = resa && (("AM" === half && resa.checkOut === n) || ("PM" === half && resa.checkIn === n));
+      const cl = resa ? c.find(cc => cc.id === resa.clientId) : null;
+      return React.createElement("td", {
+        key: half,
+        onClick: () => {
+          resa ? t({ type: "reservation", data: resa }) : maint || t({
+            type: "reservation",
+            data: { roomId: a.id, checkIn: "AM" === half ? addDays(n, -1) : n, checkOut: "AM" === half ? n : addDays(n, 1) }
+          })
+        },
+        style: {
+          padding: 0,
+          cursor: maint && !resa ? "not-allowed" : "pointer",
+          borderRight: "PM" === half ? "1px solid #0f172a" : "1px dashed #1e293b",
+          height: 28,
+          position: "relative",
+          ...(resa ? { background: STATUS_CONFIG[resa.status]?.bg || "#38bdf8" } : maint ? { background: "repeating-linear-gradient(45deg,#475569,#475569 4px,#64748b 4px,#64748b 8px)" } : {})
+        },
+        title: maint && !resa ? maint.reason || "Maintenance" : ""
+      }, isStart && resa && React.createElement("div", {
+        style: {
+          position: "absolute",
+          left: 2,
+          top: "50%",
+          transform: "translateY(-50%)",
+          fontSize: 8,
+          color: "paid" === resa.status ? "#000" : "#fff",
+          fontWeight: 600,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          maxWidth: "90%",
+          textOverflow: "ellipsis",
+          pointerEvents: "none",
+          textShadow: "paid" === resa.status ? "none" : "0 1px 2px rgba(0,0,0,0.5)"
+        }
+      }, resa.isVip && "⭐", cl ? `${cl.lastName}` : resa.clientName || "?", resa.alerts?.length > 0 && " ⚠️"));
+    });
+    return React.createElement(React.Fragment, { key: n }, halves);
+  }) : s.map(n => {
     const l = (o = a.id, r = n, i.find(e => e.roomId === o && e.checkIn <= r && e.checkOut > r && "cancelled" !== e.status));
     var o, r;
     const s = (e.maintenanceBlocks || []).find(e => e.roomId === a.id && e.from <= n && e.to > n),
@@ -10161,6 +10323,95 @@ function Invoices({
       }
     }, "PDF")))
   })))))
+}
+
+function Restaurant({ hotelData: e, user: t }) {
+  const { reservations: a, clients: n, rooms: l, invoices: o, menuItems: mi, hotelId: hid } = e;
+  const jr = today();
+  const [selResa, setSelResa] = useState(null), [cart, setCart] = useState([]), [search, setSearch] = useState(""), [saving, setSaving] = useState(false), [msg, setMsg] = useState("");
+  const activeResas = a.filter(r => "cancelled" !== r.status && r.checkIn <= jr && r.checkOut > jr);
+  const filteredResas = activeResas.filter(r => {
+    const cl = n.find(c => c.id === r.clientId), room = l.find(rm => rm.id === r.roomId);
+    return `${cl ? `${cl.lastName} ${cl.firstName}` : r.clientName || ""} ${room?.name || ""}`.toLowerCase().includes(search.toLowerCase());
+  });
+  const addToCart = item => setCart(c => {
+    const ex = c.find(x => x.itemId === item.id);
+    return ex ? c.map(x => x.itemId === item.id ? { ...x, qty: x.qty + 1 } : x) : [...c, { itemId: item.id, name: item.name, price: item.price, qty: 1 }];
+  });
+  const removeFromCart = id => setCart(c => c.filter(x => x.itemId !== id));
+  const updateQty = (id, qty) => setCart(c => c.map(x => x.itemId === id ? { ...x, qty: Math.max(1, qty) } : x));
+  const cartTotal = cart.reduce((s, x) => s + x.price * x.qty, 0);
+  const validerCommande = async () => {
+    if (!selResa || !cart.length) return;
+    setSaving(!0); setMsg("");
+    try {
+      const invRef = db.collection("hotels").doc(hid).collection("invoices");
+      const inv = o.find(i => i.reservationId === selResa.id);
+      const newLines = cart.map(x => ({ desc: x.name, qty: x.qty, pu: x.price, amount: x.qty * x.price }));
+      if (inv) {
+        await invRef.doc(inv.id).update({ lines: [...inv.lines, ...newLines] });
+      } else {
+        const nuits = daysBetween(selResa.checkIn, selResa.checkOut);
+        const baseLine = { desc: `Hébergement — ${nuits} nuit${1 !== nuits ? "s" : ""} × ${fmt(selResa.rate || 0)} F`, amount: (selResa.rate || 0) * nuits };
+        const id = uid();
+        await invRef.doc(id).set({
+          id, reservationId: selResa.id, date: today(),
+          lines: [baseLine, ...newLines],
+          paid: selResa.deposit || 0,
+          payments: selResa.deposit > 0 ? [{ amount: selResa.deposit, mode: selResa.depositMode || "", date: selResa.depositDate || today(), note: "Acompte" }] : [],
+          notes: ""
+        });
+      }
+      setCart([]); setMsg("✓ Commande ajoutée à la facture.");
+    } catch (e) {
+      setMsg("Erreur : " + (e.message || "veuillez réessayer."));
+    } finally { setSaving(!1); }
+  };
+  return React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1.3fr", gap: 16 } },
+    React.createElement("div", { style: { background: "#1e293b", borderRadius: 12, padding: 16 } },
+      React.createElement("h3", { style: { margin: "0 0 12px", fontSize: 14, color: "#94a3b8" } }, "Client / Chambre (séjours en cours)"),
+      React.createElement("input", { value: search, onChange: e => setSearch(e.target.value), placeholder: "Rechercher...", style: { ...inputStyle, marginBottom: 10 } }),
+      0 === filteredResas.length && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Aucun séjour en cours."),
+      filteredResas.map(r => {
+        const cl = n.find(c => c.id === r.clientId), room = l.find(rm => rm.id === r.roomId);
+        return React.createElement("div", {
+          key: r.id, onClick: () => setSelResa(r),
+          style: { padding: "8px 12px", cursor: "pointer", borderRadius: 8, marginBottom: 6, background: selResa?.id === r.id ? "#2563eb" : "#0f172a", color: "#e2e8f0", fontSize: 13 }
+        }, cl ? `${cl.lastName} ${cl.firstName}` : r.clientName || "—", " — ", room?.name || "—");
+      })
+    ),
+    React.createElement("div", { style: { background: "#1e293b", borderRadius: 12, padding: 16 } },
+      React.createElement("h3", { style: { margin: "0 0 12px", fontSize: 14, color: "#94a3b8" } }, "Menu"),
+      !selResa && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Sélectionnez un client à gauche."),
+      selResa && React.createElement("div", null,
+        0 === (mi || []).length && React.createElement("div", { style: { color: "#475569", fontSize: 13, marginBottom: 10 } }, "Aucun article configuré (Paramètres > Restaurant)."),
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 16 } },
+          (mi || []).map(item => React.createElement("button", {
+            key: item.id, onClick: () => addToCart(item),
+            style: { ...btnStyle("#334155"), textAlign: "left", padding: "8px 10px" }
+          }, React.createElement("div", { style: { fontSize: 12 } }, item.name), React.createElement("div", { style: { fontSize: 11, color: "#4ade80" } }, fmt(item.price), " F")))
+        ),
+        React.createElement("div", { style: { borderTop: "1px solid #334155", paddingTop: 10 } },
+          React.createElement("div", { style: { fontSize: 13, color: "#94a3b8", fontWeight: 600, marginBottom: 6 } }, "Commande en cours"),
+          0 === cart.length && React.createElement("div", { style: { color: "#475569", fontSize: 12 } }, "Vide"),
+          cart.map(x => React.createElement("div", {
+            key: x.itemId, style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13 }
+          },
+            React.createElement("span", { style: { flex: 1, color: "#e2e8f0" } }, x.name),
+            React.createElement("input", { type: "number", min: 1, value: x.qty, onChange: e => updateQty(x.itemId, +e.target.value), style: { ...inputStyle, width: 50, padding: "4px" } }),
+            React.createElement("span", { style: { color: "#10b981", width: 70, textAlign: "right" } }, fmt(x.price * x.qty), " F"),
+            React.createElement("button", { onClick: () => removeFromCart(x.itemId), style: { background: "none", border: "none", color: "#f87171", cursor: "pointer" } }, "✕")
+          )),
+          cart.length > 0 && React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginTop: 8, fontWeight: 700, color: "#f1f5f9" } }, "Total", React.createElement("span", null, fmt(cartTotal), " F")),
+          msg && React.createElement("div", { style: { marginTop: 8, fontSize: 12, color: msg.startsWith("✓") ? "#4ade80" : "#f87171" } }, msg),
+          React.createElement("button", {
+            onClick: validerCommande, disabled: saving || !cart.length,
+            style: { ...btnStyle(cart.length ? "#10b981" : "#475569"), marginTop: 10, width: "100%", opacity: saving ? .7 : 1 }
+          }, saving ? "Enregistrement…" : "Ajouter à la facture")
+        )
+      )
+    )
+  );
 }
 
 function Dashboard({
@@ -11667,7 +11918,8 @@ function InvoiceModal({
     notes: ""
   }), [g, b] = useState({
     desc: "",
-    amount: 0
+    qty: 1,
+    pu: 0
   }), [R, h] = useState({
     amount: 0,
     mode: "",
@@ -11752,41 +12004,46 @@ function InvoiceModal({
       fontWeight: 600,
       marginBottom: 8
     }
-  }, "Lignes de facturation"), y.lines.map((e, t) => React.createElement("div", {
-    key: t,
+  }, "Lignes de facturation"), y.lines.map((e, t) => {
+    const qty = e.qty || 1, pu = e.pu != null ? e.pu : (e.amount || 0);
+    return React.createElement("div", {
+      key: t,
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "6px 0",
+        borderBottom: "1px solid #334155",
+        fontSize: 13
+      }
+    }, React.createElement("span", {
+      style: {
+        color: "#e2e8f0",
+        flex: 1
+      }
+    }, e.desc, (e.qty > 1 || e.pu != null) && React.createElement("span", { style: { color: "#64748b", fontSize: 11 } }, " (", qty, " × ", fmt(pu), " F)")), React.createElement("span", {
+      style: {
+        color: "#10b981",
+        fontWeight: 600,
+        marginLeft: 12
+      }
+    }, fmt(e.amount), " F"), React.createElement("button", {
+      onClick: () => f({
+        ...y,
+        lines: y.lines.filter((e, a) => a !== t)
+      }),
+      style: {
+        background: "none",
+        border: "none",
+        color: "#f87171",
+        cursor: "pointer",
+        marginLeft: 8
+      }
+    }, "✕"));
+  }), React.createElement("div", {
     style: {
-      display: "flex",
-      justifyContent: "space-between",
-      padding: "6px 0",
-      borderBottom: "1px solid #334155",
-      fontSize: 13
-    }
-  }, React.createElement("span", {
-    style: {
-      color: "#e2e8f0",
-      flex: 1
-    }
-  }, e.desc), React.createElement("span", {
-    style: {
-      color: "#10b981",
-      fontWeight: 600,
-      marginLeft: 12
-    }
-  }, fmt(e.amount), " F"), React.createElement("button", {
-    onClick: () => f({
-      ...y,
-      lines: y.lines.filter((e, a) => a !== t)
-    }),
-    style: {
-      background: "none",
-      border: "none",
-      color: "#f87171",
-      cursor: "pointer",
-      marginLeft: 8
-    }
-  }, "✕"))), React.createElement("div", {
-    style: {
-      display: "flex",
+      display: "grid",
+      gridTemplateColumns: "2fr 70px 100px auto",
       gap: 8,
       marginTop: 8
     }
@@ -11797,33 +12054,41 @@ function InvoiceModal({
       desc: e.target.value
     }),
     placeholder: "Description",
-    style: {
-      ...inputStyle,
-      flex: 1
-    }
+    style: inputStyle
   }), React.createElement("input", {
     type: "number",
-    value: g.amount || "",
+    min: 1,
+    value: g.qty || 1,
     onChange: e => b({
       ...g,
-      amount: e.target.value
+      qty: +e.target.value
     }),
-    placeholder: "Montant F",
-    style: {
-      ...inputStyle,
-      width: 120
-    }
+    placeholder: "Qté",
+    style: inputStyle
+  }), React.createElement("input", {
+    type: "number",
+    value: g.pu || "",
+    onChange: e => b({
+      ...g,
+      pu: e.target.value
+    }),
+    placeholder: "Prix unit. F",
+    style: inputStyle
   }), React.createElement("button", {
     onClick: () => {
-      g.desc && g.amount && (f({
+      const qty = g.qty || 1, pu = +g.pu || 0;
+      g.desc && pu && (f({
         ...y,
         lines: [...y.lines, {
-          ...g,
-          amount: +g.amount
+          desc: g.desc,
+          qty,
+          pu,
+          amount: qty * pu
         }]
       }), b({
         desc: "",
-        amount: 0
+        qty: 1,
+        pu: 0
       }))
     },
     style: btnStyle("#334155")
@@ -12049,7 +12314,7 @@ function printInvoice(e, t, a, n, l, isAdmin = true) {
     c = t ? daysBetween(t.checkIn, t.checkOut) : 0,
     invoiceLabel = "Proforma",
     s = window.open("", "_blank");
-  s.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${invoiceLabel}</title>\n  <style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;color:#333}\n  h1{color:#1e3a5f}.header{display:flex;justify-content:space-between;margin-bottom:30px}\n  table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:10px;border:1px solid #ddd;text-align:left}\n  th{background:#f5f5f5}.total-row{font-weight:bold;background:#f9f9f9}\n  .status{padding:4px 12px;border-radius:4px;font-size:13px;font-weight:bold}\n  .paid{background:#d1fae5;color:#065f46}.due{background:#fee2e2;color:#991b1b}\n  @media print{button{display:none}}</style></head><body>\n  <div class="header">\n  <div><h1>🏨 ${l.hotelName}</h1><p>${invoiceLabel} N° ${e.id?.slice(0,8).toUpperCase()}</p><p>Date: ${fmtDate(e.date)}</p></div>\n  <div style="text-align:right"><p><strong>Client:</strong> ${a?`${a.lastName} ${a.firstName}`:t?.clientName||"—"}</p>\n  ${a?.company?`<p>${a.company}</p>`:""}${a?.email?`<p>${a.email}</p>`:""}${a?.phone?`<p>${a.phone}</p>`:""}</div></div>\n  <table><tr><th>Chambre</th><th>Arrivée</th><th>Départ</th><th>Nuits</th></tr>\n  <tr><td>${n?.name||"—"}</td><td>${fmtDate(t?.checkIn)}</td><td>${fmtDate(t?.checkOut)}</td><td>${c}</td></tr></table>\n  <table><tr><th>Description</th><th style="text-align:right">Montant</th></tr>\n  ${(e.lines||[]).map(e=>`<tr><td>${e.desc}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  <tr class="total-row"><td>TOTAL TTC</td><td style="text-align:right">${fmt(o)} F CFA</td></tr></table>\n  <table><tr><th>Mode</th><th>Date</th><th>Note</th><th style="text-align:right">Montant</th></tr>\n  ${(e.payments||[]).map(e=>`<tr><td>${e.mode}</td><td>${fmtDate(e.date)}</td><td>${e.note||""}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  </table>\n  <div style="text-align:right;margin-top:20px">\n  <p>Total encaissé: <strong>${fmt(r)} F CFA</strong></p>\n  <p>Restant dû: <strong class="${i<=0?"paid":"due"}" style="padding:4px 12px;border-radius:4px">${fmt(i)} F CFA</strong></p></div>\n  ${e.notes?`<p style="margin-top:20px;color:#666;font-style:italic">${e.notes}</p>`:""}\n  <button onclick="window.print()" style="margin-top:20px;padding:10px 24px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:15px">🖨️ Imprimer</button>\n  </body></html>`), s.document.close()
+  s.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${invoiceLabel}</title>\n  <style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;color:#333}\n  h1{color:#1e3a5f}.header{display:flex;justify-content:space-between;margin-bottom:30px}\n  table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:10px;border:1px solid #ddd;text-align:left}\n  th{background:#f5f5f5}.total-row{font-weight:bold;background:#f9f9f9}\n  .status{padding:4px 12px;border-radius:4px;font-size:13px;font-weight:bold}\n  .paid{background:#d1fae5;color:#065f46}.due{background:#fee2e2;color:#991b1b}\n  @media print{button{display:none}}</style></head><body>\n  <div class="header">\n  <div>${l.logoUrl?`<img src="${l.logoUrl}" style="height:50px;margin-bottom:8px">`:""}<h1>🏨 ${l.hotelName}</h1><p>${invoiceLabel} N° ${e.id?.slice(0,8).toUpperCase()}</p><p>Date: ${fmtDate(e.date)}</p></div>\n  <div style="text-align:right"><p><strong>Client:</strong> ${a?`${a.lastName} ${a.firstName}`:t?.clientName||"—"}</p>\n  ${a?.company?`<p>${a.company}</p>`:""}${a?.email?`<p>${a.email}</p>`:""}${a?.phone?`<p>${a.phone}</p>`:""}</div></div>\n  <table><tr><th>Chambre</th><th>Arrivée</th><th>Départ</th><th>Nuits</th></tr>\n  <tr><td>${n?.name||"—"}</td><td>${fmtDate(t?.checkIn)}</td><td>${fmtDate(t?.checkOut)}</td><td>${c}</td></tr></table>\n  <table><tr><th>Description</th><th style="text-align:center">Qte</th><th style="text-align:right">P.U.</th><th style="text-align:right">Montant</th></tr>\n  ${(e.lines||[]).map(e=>`<tr><td>${e.desc}</td><td style="text-align:center">${e.qty||1}</td><td style="text-align:right">${e.pu!=null?fmt(e.pu)+" F":"-"}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  <tr class="total-row"><td colspan="3">TOTAL TTC</td><td style="text-align:right">${fmt(o)} F CFA</td></tr></table>\n  <table><tr><th>Mode</th><th>Date</th><th>Note</th><th style="text-align:right">Montant</th></tr>\n  ${(e.payments||[]).map(e=>`<tr><td>${e.mode}</td><td>${fmtDate(e.date)}</td><td>${e.note||""}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  </table>\n  <div style="text-align:right;margin-top:20px">\n  <p>Total encaissé: <strong>${fmt(r)} F CFA</strong></p>\n  <p>Restant dû: <strong class="${i<=0?"paid":"due"}" style="padding:4px 12px;border-radius:4px">${fmt(i)} F CFA</strong></p></div>\n  ${e.notes?`<p style="margin-top:20px;color:#666;font-style:italic">${e.notes}</p>`:""}\n  <button onclick="window.print()" style="margin-top:20px;padding:10px 24px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:15px">🖨️ Imprimer</button>\n  </body></html>`), s.document.close()
 }
 
 function Modal({
@@ -12757,8 +13022,10 @@ function App() {
       id: c.id,
       hotelId: c.id,
       hotelName: c.hotelName,
+      logoUrl: c.logoUrl || "",
       seasons: c.seasons || [],
       paymentModes: c.paymentModes || [],
+      menuItems: c.menuItems || [],
       backupReminder: c.backupReminder || {
         enabled: !0,
         day: 1
@@ -12790,6 +13057,10 @@ function App() {
       id: "invoices",
       icon: "💰",
       label: "Facturation"
+    }, {
+      id: "restaurant",
+      icon: "🍽️",
+      label: "Restaurant"
     }, ...("admin" === w.role || "platformAdmin" === w.role) ? [{
       id: "settings",
       icon: "⚙️",
@@ -13008,6 +13279,9 @@ function App() {
   }), "invoices" === S && React.createElement(Invoices, {
     hotelData: N,
     setModal: C,
+    user: w
+  }), "restaurant" === S && React.createElement(Restaurant, {
+    hotelData: N,
     user: w
   }), "settings" === S && ("admin" === w.role || "platformAdmin" === w.role) && React.createElement(Settings, {
     hotelData: N,
