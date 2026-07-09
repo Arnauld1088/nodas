@@ -10414,18 +10414,9 @@ function Restaurant({ hotelData: e, user: t }) {
   );
 }
 
-function Dashboard({
-  hotelData: e,
-  user: t
-}) {
-  const {
-    reservations: a,
-    clients: n,
-    rooms: l,
-    invoices: o
-  } = e, hid = e.hotelId, r = today(), isAdmin = "admin" === t.role;
-  // Période admin : mois courant par défaut, ou plage libre
-  const [periodeMode, setPeriodeMode] = useState("mois"); // "mois"|"libre"
+function Comptabilite({ hotelData: e, user: t }) {
+  const { reservations: a, invoices: o } = e, r = today(), isAdmin = "admin" === t.role;
+  const [periodeMode, setPeriodeMode] = useState("mois");
   const nowM = (new Date).getMonth(),
     nowY = (new Date).getFullYear();
   const defaultFrom = `${nowY}-${String(nowM+1).padStart(2,"0")}-01`;
@@ -10433,17 +10424,8 @@ function Dashboard({
   const defaultTo = `${nowY}-${String(nowM+1).padStart(2,"0")}-${String(lastDay).padStart(2,"0")}`;
   const [periodeFrom, setPeriodeFrom] = useState(defaultFrom);
   const [periodeTo, setPeriodeTo] = useState(defaultTo);
-  // Calculs communs
-  const i = a.filter(e => e.checkIn <= r && e.checkOut > r && "cancelled" !== e.status);
-  const c = a.filter(e => e.checkIn === r && "cancelled" !== e.status);
-  const s = a.filter(e => e.checkOut === r && "cancelled" !== e.status);
-  const d = l.filter(e => "chambre" === e.type).length;
-  const m = i.filter(e => "chambre" === l.find(t => t.id === e.roomId)?.type).length;
-  const p = d > 0 ? Math.round(m / d * 100) : 0;
-  // --- Bloc CA admin : encaissements comptés selon la DATE RÉELLE DE PAIEMENT ---
   const pFrom = periodeMode === "mois" ? defaultFrom : periodeFrom;
   const pTo = periodeMode === "mois" ? defaultTo : periodeTo;
-  // Fonction commune : encaissements (acomptes/soldes) dont payment.date tombe dans [from,to], sur TOUTES les factures (hors résas annulées)
   const calcEncaissements = (from, to) => {
     let acomptes = 0, soldes = 0;
     o.forEach(inv => {
@@ -10466,7 +10448,6 @@ function Dashboard({
   const acomptesJour = encJour.acomptes;
   const soldesJour = encJour.soldes;
   const encaisseJour = encJour.total;
-  // Reste à encaisser : INDÉPENDANT de la période choisie — tant qu'une facture n'est pas soldée, elle reste due
   const resteResas = a.filter(resa => {
     if ("cancelled" === resa.status) return false;
     const inv = o.find(i => i.reservationId === resa.id);
@@ -10486,84 +10467,9 @@ function Dashboard({
     const nuits = daysBetween(resa.checkIn, resa.checkOut);
     return acc + Math.max(0, (resa.rate || 0) * nuits - (resa.deposit || 0));
   }, 0);
-  // --- Graphe occupation ---
-  const x = Array.from({
-    length: 7
-  }, (e, t) => {
-    const n = addDays(r, t - 6),
-      o = a.filter(e => e.checkIn <= n && e.checkOut > n && "cancelled" !== e.status && "chambre" === l.find(t => t.id === e.roomId)?.type).length;
-    return {
-      date: n,
-      occ: o,
-      label: weekDays[new Date(n).getDay()]
-    };
-  });
-  // Libellé période
   const moisNoms = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
   const labelPeriode = periodeMode === "mois" ? moisNoms[nowM] + " " + nowY : `${fmtDate(pFrom)} → ${fmtDate(pTo)}`;
-  return React.createElement("div", null, React.createElement("div", {
-      style: {
-        display: "grid",
-        gridTemplateColumns: "repeat(4,1fr)",
-        gap: 16,
-        marginBottom: 24
-      }
-    },
-    [{
-      label: "Taux d'occupation",
-      value: `${p}%`,
-      sub: `${m}/${d} chambres`,
-      icon: "🏨",
-      color: "#2563eb"
-    }, {
-      label: "Arrivées aujourd'hui",
-      value: c.length,
-      sub: "clients attendus",
-      icon: "📥",
-      color: "#10b981"
-    }, {
-      label: "Départs aujourd'hui",
-      value: s.length,
-      sub: "clients à partir",
-      icon: "📤",
-      color: "#f59e0b"
-    }].map((e, t) => React.createElement("div", {
-      key: t,
-      style: {
-        background: "#1e293b",
-        borderRadius: 12,
-        padding: 20,
-        borderLeft: `4px solid ${e.color}`
-      }
-    }, React.createElement("div", {
-      style: {
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "flex-start"
-      }
-    }, React.createElement("div", null, React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: "#64748b",
-        marginBottom: 4
-      }
-    }, e.label), React.createElement("div", {
-      style: {
-        fontSize: 28,
-        fontWeight: 700,
-        color: "#f1f5f9"
-      }
-    }, e.value), React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: "#94a3b8",
-        marginTop: 2
-      }
-    }, e.sub)), React.createElement("div", {
-      style: {
-        fontSize: 28
-      }
-    }, e.icon))))), isAdmin && React.createElement("div", {
+  return React.createElement("div", null, isAdmin && React.createElement("div", {
     style: {
       background: "#1e293b",
       borderRadius: 12,
@@ -10828,7 +10734,423 @@ function Dashboard({
       color: "#475569",
       marginTop: 2
     }
-  }, resteResas.length, " séjour", resteResas.length !== 1 ? "s" : "")))), React.createElement("div", {
+  }, resteResas.length, " séjour", resteResas.length !== 1 ? "s" : "")))))
+}
+
+function Comptabilite({ hotelData: e, user: t }) {
+  const { reservations: a, invoices: o } = e, r = today(), isAdmin = "admin" === t.role;
+  const [periodeMode, setPeriodeMode] = useState("mois");
+  const nowM = (new Date).getMonth(),
+    nowY = (new Date).getFullYear();
+  const defaultFrom = `${nowY}-${String(nowM+1).padStart(2,"0")}-01`;
+  const lastDay = new Date(nowY, nowM + 1, 0).getDate();
+  const defaultTo = `${nowY}-${String(nowM+1).padStart(2,"0")}-${String(lastDay).padStart(2,"0")}`;
+  const [periodeFrom, setPeriodeFrom] = useState(defaultFrom);
+  const [periodeTo, setPeriodeTo] = useState(defaultTo);
+  const pFrom = periodeMode === "mois" ? defaultFrom : periodeFrom;
+  const pTo = periodeMode === "mois" ? defaultTo : periodeTo;
+  const calcEncaissements = (from, to) => {
+    let acomptes = 0, soldes = 0;
+    o.forEach(inv => {
+      const resa = a.find(rr => rr.id === inv.reservationId);
+      if (resa && "cancelled" === resa.status) return;
+      (inv.payments || []).forEach(pmt => {
+        if (pmt.date >= from && pmt.date <= to) {
+          if ("Acompte" === pmt.note) acomptes += (pmt.amount || 0);
+          else soldes += (pmt.amount || 0);
+        }
+      });
+    });
+    return { acomptes, soldes, total: acomptes + soldes };
+  };
+  const encPeriode = calcEncaissements(pFrom, pTo);
+  const acomptesPeriode = encPeriode.acomptes;
+  const soldesPeriode = encPeriode.soldes;
+  const encaissePeriode = encPeriode.total;
+  const encJour = calcEncaissements(r, r);
+  const acomptesJour = encJour.acomptes;
+  const soldesJour = encJour.soldes;
+  const encaisseJour = encJour.total;
+  const resteResas = a.filter(resa => {
+    if ("cancelled" === resa.status) return false;
+    const inv = o.find(i => i.reservationId === resa.id);
+    if (inv) {
+      const paye = (inv.payments || []).reduce((s, p) => s + (p.amount || 0), 0);
+      return (inv.total || 0) - paye > 0;
+    }
+    const nuits = daysBetween(resa.checkIn, resa.checkOut);
+    return (resa.rate || 0) * nuits - (resa.deposit || 0) > 0;
+  });
+  const resteTotal = resteResas.reduce((acc, resa) => {
+    const inv = o.find(i => i.reservationId === resa.id);
+    if (inv) {
+      const paye = (inv.payments || []).reduce((s, p) => s + (p.amount || 0), 0);
+      return acc + Math.max(0, (inv.total || 0) - paye);
+    }
+    const nuits = daysBetween(resa.checkIn, resa.checkOut);
+    return acc + Math.max(0, (resa.rate || 0) * nuits - (resa.deposit || 0));
+  }, 0);
+  const moisNoms = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+  const labelPeriode = periodeMode === "mois" ? moisNoms[nowM] + " " + nowY : `${fmtDate(pFrom)} → ${fmtDate(pTo)}`;
+  return React.createElement("div", null, isAdmin && React.createElement("div", {
+    style: {
+      background: "#1e293b",
+      borderRadius: 12,
+      padding: 20,
+      marginBottom: 16
+    }
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 14,
+      flexWrap: "wrap",
+      gap: 8
+    }
+  }, React.createElement("h3", {
+    style: {
+      margin: 0,
+      fontSize: 14,
+      color: "#94a3b8"
+    }
+  }, "💰 Comptabilité — ", React.createElement("span", {
+    style: {
+      color: "#c9a96e"
+    }
+  }, labelPeriode)), React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      alignItems: "center",
+      flexWrap: "wrap"
+    }
+  }, React.createElement("button", {
+    onClick: () => setPeriodeMode("mois"),
+    style: {
+      ...btnStyle(periodeMode === "mois" ? "#2563eb" : "#334155"),
+      padding: "4px 10px",
+      fontSize: 12
+    }
+  }, "Mois courant"), React.createElement("button", {
+    onClick: () => setPeriodeMode("libre"),
+    style: {
+      ...btnStyle(periodeMode === "libre" ? "#2563eb" : "#334155"),
+      padding: "4px 10px",
+      fontSize: 12
+    }
+  }, "Période libre"), periodeMode === "libre" && React.createElement(React.Fragment, null, React.createElement("input", {
+    type: "date",
+    value: periodeFrom,
+    onChange: e => setPeriodeFrom(e.target.value),
+    style: {
+      padding: "4px 8px",
+      background: "#0f172a",
+      border: "1px solid #334155",
+      borderRadius: 6,
+      color: "#e2e8f0",
+      fontSize: 12
+    }
+  }), React.createElement("span", {
+    style: {
+      color: "#64748b",
+      fontSize: 12
+    }
+  }, "→"), React.createElement("input", {
+    type: "date",
+    value: periodeTo,
+    onChange: e => setPeriodeTo(e.target.value),
+    style: {
+      padding: "4px 8px",
+      background: "#0f172a",
+      border: "1px solid #334155",
+      borderRadius: 6,
+      color: "#e2e8f0",
+      fontSize: 12
+    }
+  })))), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10
+    }
+  }, React.createElement("div", {
+    style: {
+      background: "#0f172a",
+      borderRadius: 10,
+      padding: 14,
+      borderLeft: "3px solid #38bdf8"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#64748b",
+      marginBottom: 4
+    }
+  }, "💵 Acomptes reçus"), React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: "#38bdf8"
+    }
+  }, fmt(acomptesPeriode), " F")), React.createElement("div", {
+    style: {
+      background: "#0f172a",
+      borderRadius: 10,
+      padding: 14,
+      borderLeft: "3px solid #4ade80"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#64748b",
+      marginBottom: 4
+    }
+  }, "✅ Soldes encaissés"), React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: "#4ade80"
+    }
+  }, fmt(soldesPeriode), " F")), React.createElement("div", {
+    style: {
+      background: "#0f172a",
+      borderRadius: 10,
+      padding: 14,
+      borderLeft: "3px solid #facc15"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#64748b",
+      marginBottom: 4
+    }
+  }, "💰 Total encaissé"), React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: "#facc15"
+    }
+  }, fmt(encaissePeriode), " F")), React.createElement("div", {
+    style: {
+      background: "#0f172a",
+      borderRadius: 10,
+      padding: 14,
+      borderLeft: "3px solid #f87171"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#64748b",
+      marginBottom: 4
+    }
+  }, "⏳ Reste à encaisser"), React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: "#f87171"
+    }
+  }, fmt(resteTotal), " F"), React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: "#475569",
+      marginTop: 2
+    }
+  }, resteResas.length, " séjour", resteResas.length !== 1 ? "s" : "")))), !isAdmin && React.createElement("div", {
+    style: {
+      background: "#1e293b",
+      borderRadius: 12,
+      padding: 20,
+      marginBottom: 16
+    }
+  }, React.createElement("h3", {
+    style: {
+      margin: "0 0 14px",
+      fontSize: 14,
+      color: "#94a3b8"
+    }
+  }, "💰 Comptabilité — Aujourd'hui"), React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10
+    }
+  }, React.createElement("div", {
+    style: {
+      background: "#0f172a",
+      borderRadius: 10,
+      padding: 14,
+      borderLeft: "3px solid #38bdf8"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#64748b",
+      marginBottom: 4
+    }
+  }, "💵 Acomptes reçus"), React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: "#38bdf8"
+    }
+  }, fmt(acomptesJour), " F")), React.createElement("div", {
+    style: {
+      background: "#0f172a",
+      borderRadius: 10,
+      padding: 14,
+      borderLeft: "3px solid #4ade80"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#64748b",
+      marginBottom: 4
+    }
+  }, "✅ Soldes encaissés"), React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: "#4ade80"
+    }
+  }, fmt(soldesJour), " F")), React.createElement("div", {
+    style: {
+      background: "#0f172a",
+      borderRadius: 10,
+      padding: 14,
+      borderLeft: "3px solid #facc15"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#64748b",
+      marginBottom: 4
+    }
+  }, "💰 Total encaissé"), React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: "#facc15"
+    }
+  }, fmt(encaisseJour), " F")), React.createElement("div", {
+    style: {
+      background: "#0f172a",
+      borderRadius: 10,
+      padding: 14,
+      borderLeft: "3px solid #f87171"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#64748b",
+      marginBottom: 4
+    }
+  }, "⏳ Reste à encaisser"), React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: "#f87171"
+    }
+  }, fmt(resteTotal), " F"), React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: "#475569",
+      marginTop: 2
+    }
+  }, resteResas.length, " séjour", resteResas.length !== 1 ? "s" : "")))))
+}
+
+function Dashboard({
+  hotelData: e,
+  user: t
+}) {
+  const {
+    reservations: a,
+    clients: n,
+    rooms: l,
+    invoices: o
+  } = e, hid = e.hotelId, r = today(), isAdmin = "admin" === t.role;
+  const d = l.filter(e => "chambre" === e.type).length;
+  const i = a.filter(e => e.checkIn <= r && e.checkOut > r && "cancelled" !== e.status);
+  const c = a.filter(e => e.checkIn === r && "cancelled" !== e.status);
+  const s = a.filter(e => e.checkOut === r && "cancelled" !== e.status);
+  const m = i.filter(e => "chambre" === l.find(t => t.id === e.roomId)?.type).length;
+  const p = d > 0 ? Math.round(m / d * 100) : 0;
+  // --- Graphe occupation ---
+  const x = Array.from({
+    length: 7
+  }, (e, t) => {
+    const n = addDays(r, t - 6),
+      o = a.filter(e => e.checkIn <= n && e.checkOut > n && "cancelled" !== e.status && "chambre" === l.find(t => t.id === e.roomId)?.type).length;
+    return {
+      date: n,
+      occ: o,
+      label: weekDays[new Date(n).getDay()]
+    };
+  });
+  return React.createElement("div", null, React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "repeat(4,1fr)",
+        gap: 16,
+        marginBottom: 24
+      }
+    },
+    [{
+      label: "Taux d'occupation",
+      value: `${p}%`,
+      sub: `${m}/${d} chambres`,
+      icon: "🏨",
+      color: "#2563eb"
+    }, {
+      label: "Arrivées aujourd'hui",
+      value: c.length,
+      sub: "clients attendus",
+      icon: "📥",
+      color: "#10b981"
+    }, {
+      label: "Départs aujourd'hui",
+      value: s.length,
+      sub: "clients à partir",
+      icon: "📤",
+      color: "#f59e0b"
+    }].map((e, t) => React.createElement("div", {
+      key: t,
+      style: {
+        background: "#1e293b",
+        borderRadius: 12,
+        padding: 20,
+        borderLeft: `4px solid ${e.color}`
+      }
+    }, React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "flex-start"
+      }
+    }, React.createElement("div", null, React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: "#64748b",
+        marginBottom: 4
+      }
+    }, e.label), React.createElement("div", {
+      style: {
+        fontSize: 28,
+        fontWeight: 700,
+        color: "#f1f5f9"
+      }
+    }, e.value), React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: "#94a3b8",
+        marginTop: 2
+      }
+    }, e.sub)), React.createElement("div", {
+      style: {
+        fontSize: 28
+      }
+    }, e.icon))))), React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
@@ -11900,13 +12222,15 @@ function InvoiceModal({
     reservations: l,
     clients: o,
     rooms: r
-  } = e, i = t.id ? t : e.invoices.find(e => e.reservationId === t.reservationId), c = l.find(e => e.id === (i?.reservationId || t.reservationId)), s = c ? o.find(e => e.id === c.clientId) : null, d = c ? r.find(e => e.id === c.roomId) : null, m = c ? daysBetween(c.checkIn, c.checkOut) : 0, [p, u] = useState(!1), [y, f] = useState(i || {
+  } = e, i = t.id ? t : (e.invoices.find(e => e.reservationId === t.reservationId && !e.locked) || null), c = l.find(e => e.id === (i?.reservationId || t.reservationId)), s = c ? o.find(e => e.id === c.clientId) : null, d = c ? r.find(e => e.id === c.roomId) : null, m = c ? daysBetween(c.checkIn, c.checkOut) : 0, [p, u] = useState(!1), [y, f] = useState(i || {
     id: uid(),
     reservationId: c?.id,
     date: today(),
+    locked: !1,
     lines: [{
       desc: `Hébergement — ${m} nuit${1!==m?"s":""} × ${fmt(c?.rate||0)} F`,
-      amount: (c?.rate || 0) * m
+      amount: (c?.rate || 0) * m,
+      category: "hebergement"
     }],
     paid: c?.deposit || 0,
     payments: c?.deposit > 0 ? [{
@@ -11919,7 +12243,8 @@ function InvoiceModal({
   }), [g, b] = useState({
     desc: "",
     qty: 1,
-    pu: 0
+    pu: 0,
+    category: "autre"
   }), [R, h] = useState({
     amount: 0,
     mode: "",
@@ -12004,8 +12329,11 @@ function InvoiceModal({
       fontWeight: 600,
       marginBottom: 8
     }
-  }, "Lignes de facturation"), y.lines.map((e, t) => {
+  }, "Lignes de facturation"), y.locked && React.createElement("div", {
+    style: { fontSize: 12, color: "#f59e0b", background: "#78350f22", border: "1px solid #92400e", borderRadius: 6, padding: "6px 10px", marginBottom: 8 }
+  }, "🔒 Facture verrouillée — les lignes ne peuvent plus être modifiées. Les encaissements restent possibles."), y.lines.map((e, t) => {
     const qty = e.qty || 1, pu = e.pu != null ? e.pu : (e.amount || 0);
+    const catLabel = { hebergement: "🏨", restaurant: "🍽️", navette: "🚌", autre: "" }[e.category || "autre"];
     return React.createElement("div", {
       key: t,
       style: {
@@ -12021,13 +12349,13 @@ function InvoiceModal({
         color: "#e2e8f0",
         flex: 1
       }
-    }, e.desc, (e.qty > 1 || e.pu != null) && React.createElement("span", { style: { color: "#64748b", fontSize: 11 } }, " (", qty, " × ", fmt(pu), " F)")), React.createElement("span", {
+    }, catLabel, " ", e.desc, (e.qty > 1 || e.pu != null) && React.createElement("span", { style: { color: "#64748b", fontSize: 11 } }, " (", qty, " × ", fmt(pu), " F)")), React.createElement("span", {
       style: {
         color: "#10b981",
         fontWeight: 600,
         marginLeft: 12
       }
-    }, fmt(e.amount), " F"), React.createElement("button", {
+    }, fmt(e.amount), " F"), !y.locked && React.createElement("button", {
       onClick: () => f({
         ...y,
         lines: y.lines.filter((e, a) => a !== t)
@@ -12040,10 +12368,10 @@ function InvoiceModal({
         marginLeft: 8
       }
     }, "✕"));
-  }), React.createElement("div", {
+  }), !y.locked && React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "2fr 70px 100px auto",
+      gridTemplateColumns: "1.6fr 60px 90px 100px auto",
       gap: 8,
       marginTop: 8
     }
@@ -12074,7 +12402,11 @@ function InvoiceModal({
     }),
     placeholder: "Prix unit. F",
     style: inputStyle
-  }), React.createElement("button", {
+  }), React.createElement("select", {
+    value: g.category || "autre",
+    onChange: e => b({ ...g, category: e.target.value }),
+    style: inputStyle
+  }, React.createElement("option", { value: "hebergement" }, "Hébergement"), React.createElement("option", { value: "restaurant" }, "Restaurant"), React.createElement("option", { value: "navette" }, "Navette"), React.createElement("option", { value: "autre" }, "Autre")), React.createElement("button", {
     onClick: () => {
       const qty = g.qty || 1, pu = +g.pu || 0;
       g.desc && pu && (f({
@@ -12083,12 +12415,14 @@ function InvoiceModal({
           desc: g.desc,
           qty,
           pu,
-          amount: qty * pu
+          amount: qty * pu,
+          category: g.category || "autre"
         }]
       }), b({
         desc: "",
         qty: 1,
-        pu: 0
+        pu: 0,
+        category: "autre"
       }))
     },
     style: btnStyle("#334155")
@@ -12278,7 +12612,30 @@ function InvoiceModal({
   }, React.createElement("button", {
     onClick: a,
     style: btnStyle("#334155")
-  }, "Annuler"), React.createElement("button", {
+  }, "Annuler"), isAdmin && y.locked && React.createElement("button", {
+    onClick: async () => {
+      if (!confirm("Déverrouiller cette facture pour permettre la modification des lignes ?")) return;
+      u(!0);
+      try {
+        await db.collection("hotels").doc(n).collection("invoices").doc(y.id).update({ locked: !1 });
+        f({ ...y, locked: !1 })
+      } finally { u(!1) }
+    },
+    disabled: p,
+    style: { ...btnStyle("#7f1d1d"), opacity: p ? .7 : 1 }
+  }, "🔓 Déverrouiller"), !y.locked && React.createElement("button", {
+    onClick: async () => {
+      if (!confirm("Verrouiller cette facture ? Les lignes ne pourront plus être modifiées (les encaissements resteront possibles).")) return;
+      u(!0);
+      try {
+        const finalInv = { ...y, locked: !0, total: E, paid: v };
+        await db.collection("hotels").doc(n).collection("invoices").doc(finalInv.id).set(finalInv);
+        f(finalInv)
+      } finally { u(!1) }
+    },
+    disabled: p,
+    style: { ...btnStyle("#f59e0b"), opacity: p ? .7 : 1 }
+  }, "🔒 Facturer"), React.createElement("button", {
     onClick: async () => {
       try {
         printInvoice(await x(), c, s, d, e, isAdmin), a()
@@ -13042,6 +13399,10 @@ function App() {
       icon: "📊",
       label: "Tableau de bord"
     }, {
+      id: "comptabilite",
+      icon: "📈",
+      label: "Comptabilité"
+    }, {
       id: "planning",
       icon: "📅",
       label: "Planning"
@@ -13061,6 +13422,10 @@ function App() {
       id: "restaurant",
       icon: "🍽️",
       label: "Restaurant"
+    }, {
+      id: "comptabilite",
+      icon: "💰",
+      label: "Comptabilité"
     }, ...("admin" === w.role || "platformAdmin" === w.role) ? [{
       id: "settings",
       icon: "⚙️",
@@ -13265,6 +13630,9 @@ function App() {
   }, "dashboard" === S && React.createElement(Dashboard, {
     hotelData: N,
     user: w
+  }), "comptabilite" === S && React.createElement(Comptabilite, {
+    hotelData: N,
+    user: w
   }), "planning" === S && React.createElement(Planning, {
     hotelData: N,
     setModal: C
@@ -13281,6 +13649,9 @@ function App() {
     setModal: C,
     user: w
   }), "restaurant" === S && React.createElement(Restaurant, {
+    hotelData: N,
+    user: w
+  }), "comptabilite" === S && React.createElement(Comptabilite, {
     hotelData: N,
     user: w
   }), "settings" === S && ("admin" === w.role || "platformAdmin" === w.role) && React.createElement(Settings, {
