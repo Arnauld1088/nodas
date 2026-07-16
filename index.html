@@ -10366,19 +10366,20 @@ function Restaurant({ hotelData: e, user: t }) {
   const cartTotal = cart.reduce((s, x) => s + x.price * x.qty, 0);
   const validerCommande = async () => {
     if (!selResa || !cart.length) return;
+    const inv = o.find(i => i.reservationId === selResa.id);
+    if (inv && inv.locked) return setMsg("⚠️ Facture déjà verrouillée (🔒 Facturée) — impossible d'ajouter des lignes. Encaissez directement ou faites un avoir.");
     setSaving(!0); setMsg("");
     try {
       const invRef = db.collection("hotels").doc(hid).collection("invoices");
-      const inv = o.find(i => i.reservationId === selResa.id);
-      const newLines = cart.map(x => ({ desc: x.name, qty: x.qty, pu: x.price, amount: x.qty * x.price }));
+      const newLines = cart.map(x => ({ desc: x.name, qty: x.qty, pu: x.price, amount: x.qty * x.price, category: "restaurant" }));
       if (inv) {
         await invRef.doc(inv.id).update({ lines: [...inv.lines, ...newLines] });
       } else {
         const nuits = daysBetween(selResa.checkIn, selResa.checkOut);
-        const baseLine = { desc: `Hébergement — ${nuits} nuit${1 !== nuits ? "s" : ""} × ${fmt(selResa.rate || 0)} F`, amount: (selResa.rate || 0) * nuits, cat: "Hébergement" };
+        const baseLine = { desc: `Hébergement — ${nuits} nuit${1 !== nuits ? "s" : ""} × ${fmt(selResa.rate || 0)} F`, amount: (selResa.rate || 0) * nuits, category: "hebergement" };
         const id = uid();
         await invRef.doc(id).set({
-          id, reservationId: selResa.id, date: today(),
+          id, reservationId: selResa.id, date: today(), locked: !1,
           lines: [baseLine, ...newLines],
           paid: selResa.deposit || 0,
           payments: selResa.deposit > 0 ? [{ amount: selResa.deposit, mode: selResa.depositMode || "", date: selResa.depositDate || today(), note: "Acompte" }] : [],
@@ -12001,7 +12002,7 @@ function InvoiceModal({
     reservations: l,
     clients: o,
     rooms: r
-  } = e, i = t.id ? t : (e.invoices.find(e => e.reservationId === t.reservationId && !e.locked) || null), c = l.find(e => e.id === (i?.reservationId || t.reservationId)), s = c ? o.find(e => e.id === c.clientId) : null, d = c ? r.find(e => e.id === c.roomId) : null, m = c ? daysBetween(c.checkIn, c.checkOut) : 0, [p, u] = useState(!1), [y, f] = useState(i || {
+  } = e, i = t.id ? t : (e.invoices.find(e => e.reservationId === t.reservationId) || null), c = l.find(e => e.id === (i?.reservationId || t.reservationId)), s = c ? o.find(e => e.id === c.clientId) : null, d = c ? r.find(e => e.id === c.roomId) : null, m = c ? daysBetween(c.checkIn, c.checkOut) : 0, [p, u] = useState(!1), [y, f] = useState(i || {
     id: uid(),
     reservationId: c?.id,
     date: today(),
@@ -12205,7 +12206,22 @@ function InvoiceModal({
       }))
     },
     style: btnStyle("#334155")
-  }, "+ Ligne")), React.createElement("div", {
+  }, "+ Ligne"), e.taxeSejour?.enabled && !y.locked && React.createElement("button", {
+    onClick: () => {
+      const nuits = m, personnes = c?.persons || 1, montant = e.taxeSejour.montant || 0;
+      montant > 0 && f({
+        ...y,
+        lines: [...y.lines, {
+          desc: `Taxe de séjour — ${nuits} nuit${1 !== nuits ? "s" : ""} × ${personnes} pers. × ${fmt(montant)} F`,
+          qty: nuits * personnes,
+          pu: montant,
+          amount: nuits * personnes * montant,
+          category: "autre"
+        }]
+      })
+    },
+    style: { ...btnStyle("#7c3aed"), marginLeft: 8 }
+  }, "+ Taxe de séjour")), React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "flex-end",
@@ -12450,7 +12466,7 @@ function printInvoice(e, t, a, n, l, isAdmin = true) {
     c = t ? daysBetween(t.checkIn, t.checkOut) : 0,
     invoiceLabel = "Proforma",
     s = window.open("", "_blank");
-  s.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${invoiceLabel}</title>\n  <style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;color:#333}\n  h1{color:#1e3a5f}.header{display:flex;justify-content:space-between;margin-bottom:30px}\n  table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:10px;border:1px solid #ddd;text-align:left}\n  th{background:#f5f5f5}.total-row{font-weight:bold;background:#f9f9f9}\n  .status{padding:4px 12px;border-radius:4px;font-size:13px;font-weight:bold}\n  .paid{background:#d1fae5;color:#065f46}.due{background:#fee2e2;color:#991b1b}\n  @media print{button{display:none}}</style></head><body>\n  <div class="header">\n  <div>${l.logoUrl?`<img src="${l.logoUrl}" style="height:50px;margin-bottom:8px">`:""}<h1>🏨 ${l.hotelName}</h1><p>${invoiceLabel} N° ${e.id?.slice(0,8).toUpperCase()}</p><p>Date: ${fmtDate(e.date)}</p></div>\n  <div style="text-align:right"><p><strong>Client:</strong> ${a?`${a.lastName} ${a.firstName}`:t?.clientName||"—"}</p>\n  ${a?.company?`<p>${a.company}</p>`:""}${a?.email?`<p>${a.email}</p>`:""}${a?.phone?`<p>${a.phone}</p>`:""}</div></div>\n  <table><tr><th>Chambre</th><th>Arrivée</th><th>Départ</th><th>Nuits</th></tr>\n  <tr><td>${n?.name||"—"}</td><td>${fmtDate(t?.checkIn)}</td><td>${fmtDate(t?.checkOut)}</td><td>${c}</td></tr></table>\n  <table><tr><th>Description</th><th style="text-align:center">Qte</th><th style="text-align:right">P.U.</th><th style="text-align:right">Montant</th></tr>\n  ${(e.lines||[]).map(e=>`<tr><td>${e.desc}</td><td style="text-align:center">${e.qty||1}</td><td style="text-align:right">${e.pu!=null?fmt(e.pu)+" F":"-"}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  <tr class="total-row"><td colspan="3">TOTAL TTC</td><td style="text-align:right">${fmt(o)} F CFA</td></tr></table>\n  <table><tr><th>Mode</th><th>Date</th><th>Note</th><th style="text-align:right">Montant</th></tr>\n  ${(e.payments||[]).map(e=>`<tr><td>${e.mode}</td><td>${fmtDate(e.date)}</td><td>${e.note||""}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  </table>\n  <div style="text-align:right;margin-top:20px">\n  <p>Total encaissé: <strong>${fmt(r)} F CFA</strong></p>\n  <p>Restant dû: <strong class="${i<=0?"paid":"due"}" style="padding:4px 12px;border-radius:4px">${fmt(i)} F CFA</strong></p></div>\n  ${e.notes?`<p style="margin-top:20px;color:#666;font-style:italic">${e.notes}</p>`:""}\n  <button onclick="window.print()" style="margin-top:20px;padding:10px 24px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:15px">🖨️ Imprimer</button>\n  </body></html>`), s.document.close()
+  s.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${invoiceLabel}</title>\n  <style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;color:#333}\n  h1{color:#1e3a5f}.header{display:flex;justify-content:space-between;margin-bottom:30px}\n  table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:10px;border:1px solid #ddd;text-align:left}\n  th{background:#f5f5f5}.total-row{font-weight:bold;background:#f9f9f9}\n  .status{padding:4px 12px;border-radius:4px;font-size:13px;font-weight:bold}\n  .paid{background:#d1fae5;color:#065f46}.due{background:#fee2e2;color:#991b1b}\n  @media print{button{display:none}}</style></head><body>\n  <div class="header">\n  <div>${l.logoUrl?`<img src="${l.logoUrl}" style="height:50px;margin-bottom:8px"><h1>${l.hotelName}</h1>`:`<h1>🏨 ${l.hotelName}</h1>`}<p>${invoiceLabel} N° ${e.id?.slice(0,8).toUpperCase()}</p><p>Date: ${fmtDate(e.date)}</p></div>\n  <div style="text-align:right"><p><strong>Client:</strong> ${a?`${a.lastName} ${a.firstName}`:t?.clientName||"—"}</p>\n  ${a?.company?`<p>${a.company}</p>`:""}${a?.email?`<p>${a.email}</p>`:""}${a?.phone?`<p>${a.phone}</p>`:""}</div></div>\n  <table><tr><th>Chambre</th><th>Arrivée</th><th>Départ</th><th>Nuits</th></tr>\n  <tr><td>${n?.name||"—"}</td><td>${fmtDate(t?.checkIn)}</td><td>${fmtDate(t?.checkOut)}</td><td>${c}</td></tr></table>\n  <table><tr><th>Description</th><th style="text-align:center">Qte</th><th style="text-align:right">P.U.</th><th style="text-align:right">Montant</th></tr>\n  ${(e.lines||[]).map(e=>`<tr><td>${e.desc}</td><td style="text-align:center">${e.qty||1}</td><td style="text-align:right">${e.pu!=null?fmt(e.pu)+" F":"-"}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  <tr class="total-row"><td colspan="3">TOTAL TTC</td><td style="text-align:right">${fmt(o)} F CFA</td></tr></table>\n  <table><tr><th>Mode</th><th>Date</th><th>Note</th><th style="text-align:right">Montant</th></tr>\n  ${(e.payments||[]).map(e=>`<tr><td>${e.mode}</td><td>${fmtDate(e.date)}</td><td>${e.note||""}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  </table>\n  <div style="text-align:right;margin-top:20px">\n  <p>Total encaissé: <strong>${fmt(r)} F CFA</strong></p>\n  <p>Restant dû: <strong class="${i<=0?"paid":"due"}" style="padding:4px 12px;border-radius:4px">${fmt(i)} F CFA</strong></p></div>\n  ${e.notes?`<p style="margin-top:20px;color:#666;font-style:italic">${e.notes}</p>`:""}\n  <button onclick="window.print()" style="margin-top:20px;padding:10px 24px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:15px">🖨️ Imprimer</button>\n  </body></html>`), s.document.close()
 }
 
 function Modal({
