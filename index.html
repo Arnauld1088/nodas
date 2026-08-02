@@ -10103,7 +10103,7 @@ function Invoices({
   } = e, d = s.filter(e => {
     const t = r.find(t => t.id === e.reservationId),
       n = t ? i.find(e => e.id === t.clientId) : null,
-      o = (n ? `${n.lastName} ${n.firstName}` : t?.clientName || "").toLowerCase().includes(a.toLowerCase()) || e.id.includes(a),
+      o = (n ? `${n.lastName} ${n.firstName}` : t?.clientName || e.clientName || "").toLowerCase().includes(a.toLowerCase()) || e.id.includes(a),
       c = (e.total || 0) - (e.paid || 0);
     return o && ("all" === l || "unpaid" === l && c > 0 || "paid" === l && c <= 0)
   }).sort((e, t) => t.date.localeCompare(e.date)), m = s.reduce((e, t) => e + (t.paid || 0), 0), p = s.reduce((e, t) => e + Math.max(0, (t.total || 0) - (t.paid || 0)), 0), isAdmin = "admin" === isUser.role;
@@ -10297,7 +10297,7 @@ function Invoices({
         padding: "10px 12px",
         color: "#e2e8f0"
       }
-    }, l ? `${l.lastName} ${l.firstName}` : n?.clientName || "-", n && "cancelled" === n.status && React.createElement("span", {
+    }, l ? `${l.lastName} ${l.firstName}` : n?.clientName || a.clientName || "-", n && "cancelled" === n.status && React.createElement("span", {
     style: { marginLeft: 6, fontSize: 10, color: "#f87171", border: "1px solid #f87171", borderRadius: 4, padding: "1px 5px" },
     title: "La réservation liée à cette facture a été annulée"
   }, "⚠️ Résa annulée")), React.createElement("td", {
@@ -10305,7 +10305,7 @@ function Invoices({
         padding: "10px 12px",
         color: "#94a3b8"
       }
-    }, o?.name || "-"), React.createElement("td", {
+    }, o?.name || (a.standalone ? "🍽️ Restaurant" : "-")), React.createElement("td", {
       style: {
         padding: "10px 12px",
         color: "#f1f5f9",
@@ -10348,9 +10348,10 @@ function Invoices({
   })))))
 }
 
-function Restaurant({ hotelData: e, user: t }) {
+function Restaurant({ hotelData: e, user: t, setModal: sm }) {
   const { reservations: a, clients: n, rooms: l, invoices: o, menuItems: mi, hotelId: hid } = e;
   const jr = today();
+  const [mode, setMode] = useState("resa"), [walkInName, setWalkInName] = useState("");
   const [selResa, setSelResa] = useState(null), [cart, setCart] = useState([]), [search, setSearch] = useState(""), [saving, setSaving] = useState(false), [msg, setMsg] = useState("");
   const activeResas = a.filter(r => "cancelled" !== r.status && r.checkIn <= jr && r.checkOut > jr);
   const filteredResas = activeResas.filter(r => {
@@ -10364,50 +10365,81 @@ function Restaurant({ hotelData: e, user: t }) {
   const removeFromCart = id => setCart(c => c.filter(x => x.itemId !== id));
   const updateQty = (id, qty) => setCart(c => c.map(x => x.itemId === id ? { ...x, qty: Math.max(1, qty) } : x));
   const cartTotal = cart.reduce((s, x) => s + x.price * x.qty, 0);
+  const ready = "resa" === mode ? !!selResa : !0;
   const validerCommande = async () => {
-    if (!selResa || !cart.length) return;
-    const inv = o.find(i => i.reservationId === selResa.id);
-    if (inv && inv.locked) return setMsg("⚠️ Facture déjà verrouillée (🔒 Facturée) — impossible d'ajouter des lignes. Encaissez directement ou faites un avoir.");
+    if (!ready || !cart.length) return;
     setSaving(!0); setMsg("");
     try {
       const invRef = db.collection("hotels").doc(hid).collection("invoices");
       const newLines = cart.map(x => ({ desc: x.name, qty: x.qty, pu: x.price, amount: x.qty * x.price, category: "restaurant" }));
-      if (inv) {
-        await invRef.doc(inv.id).update({ lines: [...inv.lines, ...newLines] });
-      } else {
-        const nuits = daysBetween(selResa.checkIn, selResa.checkOut);
-        const baseLine = { desc: `Hébergement — ${nuits} nuit${1 !== nuits ? "s" : ""} × ${fmt(selResa.rate || 0)} F`, amount: (selResa.rate || 0) * nuits, category: "hebergement" };
+      if ("passage" === mode) {
         const id = uid();
-        await invRef.doc(id).set({
-          id, reservationId: selResa.id, date: today(), locked: !1,
-          lines: [baseLine, ...newLines],
-          paid: selResa.deposit || 0,
-          payments: selResa.deposit > 0 ? [{ amount: selResa.deposit, mode: selResa.depositMode || "", date: selResa.depositDate || today(), note: "Acompte" }] : [],
-          notes: ""
-        });
+        const inv = {
+          id, reservationId: null, standalone: !0,
+          clientName: walkInName.trim() || "Client de passage",
+          date: today(), locked: !1,
+          lines: newLines, paid: 0, payments: [], notes: ""
+        };
+        await invRef.doc(id).set(inv);
+        setCart([]); setWalkInName(""); setMsg("✓ Facture restaurant créée.");
+        sm && sm({ type: "invoice", data: inv });
+      } else {
+        const inv = o.find(i => i.reservationId === selResa.id);
+        if (inv && inv.locked) return setMsg("⚠️ Facture déjà verrouillée (🔒 Facturée) — impossible d'ajouter des lignes. Encaissez directement ou faites un avoir.");
+        if (inv) {
+          await invRef.doc(inv.id).update({ lines: [...inv.lines, ...newLines] });
+        } else {
+          const nuits = daysBetween(selResa.checkIn, selResa.checkOut);
+          const baseLine = { desc: `Hébergement — ${nuits} nuit${1 !== nuits ? "s" : ""} × ${fmt(selResa.rate || 0)} F`, amount: (selResa.rate || 0) * nuits, category: "hebergement" };
+          const id = uid();
+          await invRef.doc(id).set({
+            id, reservationId: selResa.id, date: today(), locked: !1,
+            lines: [baseLine, ...newLines],
+            paid: selResa.deposit || 0,
+            payments: selResa.deposit > 0 ? [{ amount: selResa.deposit, mode: selResa.depositMode || "", date: selResa.depositDate || today(), note: "Acompte" }] : [],
+            notes: ""
+          });
+        }
+        setCart([]); setMsg("✓ Commande ajoutée à la facture.");
       }
-      setCart([]); setMsg("✓ Commande ajoutée à la facture.");
     } catch (e) {
       setMsg("Erreur : " + (e.message || "veuillez réessayer."));
     } finally { setSaving(!1); }
   };
   return React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1.3fr", gap: 16 } },
     React.createElement("div", { style: { background: "#1e293b", borderRadius: 12, padding: 16 } },
-      React.createElement("h3", { style: { margin: "0 0 12px", fontSize: 14, color: "#94a3b8" } }, "Client / Chambre (séjours en cours)"),
-      React.createElement("input", { value: search, onChange: e => setSearch(e.target.value), placeholder: "Rechercher...", style: { ...inputStyle, marginBottom: 10 } }),
-      0 === filteredResas.length && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Aucun séjour en cours."),
-      filteredResas.map(r => {
-        const cl = n.find(c => c.id === r.clientId), room = l.find(rm => rm.id === r.roomId);
-        return React.createElement("div", {
-          key: r.id, onClick: () => setSelResa(r),
-          style: { padding: "8px 12px", cursor: "pointer", borderRadius: 8, marginBottom: 6, background: selResa?.id === r.id ? "#2563eb" : "#0f172a", color: "#e2e8f0", fontSize: 13 }
-        }, cl ? `${cl.lastName} ${cl.firstName}` : r.clientName || "—", " — ", room?.name || "—");
-      })
+      React.createElement("div", { style: { display: "flex", gap: 4, marginBottom: 14, background: "#0f172a", borderRadius: 8, padding: 4 } },
+        React.createElement("button", {
+          onClick: () => { setMode("resa"); setCart([]); setMsg(""); },
+          style: { flex: 1, padding: "8px", background: "resa" === mode ? "#2563eb" : "transparent", border: "none", borderRadius: 6, color: "resa" === mode ? "#fff" : "#94a3b8", cursor: "pointer", fontSize: 12, fontWeight: 600 }
+        }, "🏨 Client de l'hôtel"),
+        React.createElement("button", {
+          onClick: () => { setMode("passage"); setCart([]); setSelResa(null); setMsg(""); },
+          style: { flex: 1, padding: "8px", background: "passage" === mode ? "#2563eb" : "transparent", border: "none", borderRadius: 6, color: "passage" === mode ? "#fff" : "#94a3b8", cursor: "pointer", fontSize: 12, fontWeight: 600 }
+        }, "🚶 Client de passage")
+      ),
+      "resa" === mode ? React.createElement(React.Fragment, null,
+        React.createElement("h3", { style: { margin: "0 0 12px", fontSize: 14, color: "#94a3b8" } }, "Client / Chambre (séjours en cours)"),
+        React.createElement("input", { value: search, onChange: e => setSearch(e.target.value), placeholder: "Rechercher...", style: { ...inputStyle, marginBottom: 10 } }),
+        0 === filteredResas.length && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Aucun séjour en cours."),
+        filteredResas.map(r => {
+          const cl = n.find(c => c.id === r.clientId), room = l.find(rm => rm.id === r.roomId);
+          return React.createElement("div", {
+            key: r.id, onClick: () => setSelResa(r),
+            style: { padding: "8px 12px", cursor: "pointer", borderRadius: 8, marginBottom: 6, background: selResa?.id === r.id ? "#2563eb" : "#0f172a", color: "#e2e8f0", fontSize: 13 }
+          }, cl ? `${cl.lastName} ${cl.firstName}` : r.clientName || "—", " — ", room?.name || "—");
+        })
+      ) : React.createElement(React.Fragment, null,
+        React.createElement("h3", { style: { margin: "0 0 12px", fontSize: 14, color: "#94a3b8" } }, "Client de passage (sans réservation)"),
+        React.createElement("label", { style: labelStyle }, "Nom du client (facultatif)"),
+        React.createElement("input", { value: walkInName, onChange: e => setWalkInName(e.target.value), placeholder: "Ex: Table 4, ou nom du client", style: inputStyle }),
+        React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginTop: 8 } }, "Une facture indépendante sera créée directement, sans lien avec une chambre.")
+      )
     ),
     React.createElement("div", { style: { background: "#1e293b", borderRadius: 12, padding: 16 } },
       React.createElement("h3", { style: { margin: "0 0 12px", fontSize: 14, color: "#94a3b8" } }, "Menu"),
-      !selResa && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Sélectionnez un client à gauche."),
-      selResa && React.createElement("div", null,
+      !ready && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Sélectionnez un client à gauche."),
+      ready && React.createElement("div", null,
         0 === (mi || []).length && React.createElement("div", { style: { color: "#475569", fontSize: 13, marginBottom: 10 } }, "Aucun article configuré (Paramètres > Restaurant)."),
         React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 16 } },
           (mi || []).map(item => React.createElement("button", {
@@ -10431,14 +10463,14 @@ function Restaurant({ hotelData: e, user: t }) {
           React.createElement("button", {
             onClick: validerCommande, disabled: saving || !cart.length,
             style: { ...btnStyle(cart.length ? "#10b981" : "#475569"), marginTop: 10, width: "100%", opacity: saving ? .7 : 1 }
-          }, saving ? "Enregistrement…" : "Ajouter à la facture")
+          }, saving ? "Enregistrement…" : "passage" === mode ? "Créer la facture" : "Ajouter à la facture")
         )
       )
     )
   );
 }
 
-function Comptabilite({ hotelData: e, user: t }) {
+function Comptabilite({ hotelData: e, user: t, mob: mb }) {
   const { reservations: a, invoices: o, rooms: rm, clients: cl } = e, r = today(), isAdmin = "admin" === t.role;
   const [periodeMode, setPeriodeMode] = useState("mois");
   const nowM = (new Date).getMonth(),
@@ -10515,8 +10547,8 @@ function Comptabilite({ hotelData: e, user: t }) {
     if (resa && "cancelled" === resa.status) return;
     const room = resa ? rm.find(r2 => r2.id === resa.roomId) : null;
     const client = resa ? cl.find(c2 => c2.id === resa.clientId) : null;
-    const nomClient = client ? `${client.lastName} ${client.firstName}` : resa?.clientName || "—";
-    const nomRoom = room?.name || "—";
+    const nomClient = client ? `${client.lastName} ${client.firstName}` : resa?.clientName || inv.clientName || "—";
+    const nomRoom = room?.name || (inv.standalone ? "🍽️ Restaurant" : "—");
     (inv.payments || []).forEach(pmt => {
       if (pmt.date >= pFrom && pmt.date <= pTo) {
         const mode = pmt.mode || "Non précisé";
@@ -10611,7 +10643,7 @@ function Comptabilite({ hotelData: e, user: t }) {
   })))), React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "1fr 1fr",
+      gridTemplateColumns: mb ? "1fr" : "1fr 1fr",
       gap: 10
     }
   }, React.createElement("div", {
@@ -10700,7 +10732,7 @@ function Comptabilite({ hotelData: e, user: t }) {
     style: { background: "#1e293b", borderRadius: 12, padding: 20, marginBottom: 16 }
   },
     React.createElement("h3", { style: { margin: "0 0 14px", fontSize: 14, color: "#94a3b8" } }, "📊 CA facturé & répartitions — ", React.createElement("span", { style: { color: "#c9a96e" } }, labelPeriode)),
-    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 } },
+    React.createElement("div", { style: { display: "grid", gridTemplateColumns: mb ? "1fr" : "1fr 1fr", gap: 10, marginBottom: 16 } },
       React.createElement("div", { style: { background: "#0f172a", borderRadius: 10, padding: 14, borderLeft: "3px solid #a78bfa" } },
         React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginBottom: 4 } }, "🧾 CA facturé (émis sur la période)"),
         React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#a78bfa" } }, fmt(caFacture), " F")),
@@ -10752,7 +10784,7 @@ function Comptabilite({ hotelData: e, user: t }) {
   }, "💰 Comptabilité — Aujourd'hui"), React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "1fr 1fr",
+      gridTemplateColumns: mb ? "1fr" : "1fr 1fr",
       gap: 10
     }
   }, React.createElement("div", {
@@ -10842,7 +10874,8 @@ function Comptabilite({ hotelData: e, user: t }) {
 
 function Dashboard({
   hotelData: e,
-  user: t
+  user: t,
+  mob: mb
 }) {
   const {
     reservations: a,
@@ -10871,7 +10904,7 @@ function Dashboard({
   return React.createElement("div", null, React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "repeat(4,1fr)",
+        gridTemplateColumns: mb ? "1fr 1fr" : "repeat(4,1fr)",
         gap: 16,
         marginBottom: 24
       }
@@ -10933,7 +10966,7 @@ function Dashboard({
     }, e.icon))))), React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "1fr 1fr",
+      gridTemplateColumns: mb ? "1fr" : "1fr 1fr",
       gap: 16
     }
   }, React.createElement("div", {
@@ -12074,7 +12107,7 @@ function InvoiceModal({
       color: "#f1f5f9",
       fontWeight: 600
     }
-  }, s ? `${s.lastName} ${s.firstName}` : c?.clientName || "—")), React.createElement("div", {
+  }, s ? `${s.lastName} ${s.firstName}` : c?.clientName || y.clientName || "—")), React.createElement("div", {
     style: {
       flex: 1
     }
@@ -12088,7 +12121,7 @@ function InvoiceModal({
       fontSize: 14,
       color: "#f1f5f9"
     }
-  }, d?.name || "—")), React.createElement("div", null, React.createElement("div", {
+  }, d?.name || (y.standalone ? "🍽️ Restaurant" : "—"))), React.createElement("div", null, React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#64748b"
@@ -12098,7 +12131,7 @@ function InvoiceModal({
       fontSize: 13,
       color: "#94a3b8"
     }
-  }, fmtDate(c?.checkIn), " → ", fmtDate(c?.checkOut)))), React.createElement("div", {
+  }, c ? React.createElement(React.Fragment, null, fmtDate(c?.checkIn), " → ", fmtDate(c?.checkOut)) : "Facture indépendante"))), React.createElement("div", {
     style: {
       marginBottom: 16
     }
@@ -12466,7 +12499,7 @@ function printInvoice(e, t, a, n, l, isAdmin = true) {
     c = t ? daysBetween(t.checkIn, t.checkOut) : 0,
     invoiceLabel = "Proforma",
     s = window.open("", "_blank");
-  s.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${invoiceLabel}</title>\n  <style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;color:#333}\n  h1{color:#1e3a5f}.header{display:flex;justify-content:space-between;margin-bottom:30px}\n  table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:10px;border:1px solid #ddd;text-align:left}\n  th{background:#f5f5f5}.total-row{font-weight:bold;background:#f9f9f9}\n  .status{padding:4px 12px;border-radius:4px;font-size:13px;font-weight:bold}\n  .paid{background:#d1fae5;color:#065f46}.due{background:#fee2e2;color:#991b1b}\n  @media print{button{display:none}}</style></head><body>\n  <div class="header">\n  <div>${l.logoUrl?`<img src="${l.logoUrl}" style="height:50px;margin-bottom:8px"><h1>${l.hotelName}</h1>`:`<h1>🏨 ${l.hotelName}</h1>`}<p>${invoiceLabel} N° ${e.id?.slice(0,8).toUpperCase()}</p><p>Date: ${fmtDate(e.date)}</p></div>\n  <div style="text-align:right"><p><strong>Client:</strong> ${a?`${a.lastName} ${a.firstName}`:t?.clientName||"—"}</p>\n  ${a?.company?`<p>${a.company}</p>`:""}${a?.email?`<p>${a.email}</p>`:""}${a?.phone?`<p>${a.phone}</p>`:""}</div></div>\n  <table><tr><th>Chambre</th><th>Arrivée</th><th>Départ</th><th>Nuits</th></tr>\n  <tr><td>${n?.name||"—"}</td><td>${fmtDate(t?.checkIn)}</td><td>${fmtDate(t?.checkOut)}</td><td>${c}</td></tr></table>\n  <table><tr><th>Description</th><th style="text-align:center">Qte</th><th style="text-align:right">P.U.</th><th style="text-align:right">Montant</th></tr>\n  ${(e.lines||[]).map(e=>`<tr><td>${e.desc}</td><td style="text-align:center">${e.qty||1}</td><td style="text-align:right">${e.pu!=null?fmt(e.pu)+" F":"-"}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  <tr class="total-row"><td colspan="3">TOTAL TTC</td><td style="text-align:right">${fmt(o)} F CFA</td></tr></table>\n  <table><tr><th>Mode</th><th>Date</th><th>Note</th><th style="text-align:right">Montant</th></tr>\n  ${(e.payments||[]).map(e=>`<tr><td>${e.mode}</td><td>${fmtDate(e.date)}</td><td>${e.note||""}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  </table>\n  <div style="text-align:right;margin-top:20px">\n  <p>Total encaissé: <strong>${fmt(r)} F CFA</strong></p>\n  <p>Restant dû: <strong class="${i<=0?"paid":"due"}" style="padding:4px 12px;border-radius:4px">${fmt(i)} F CFA</strong></p></div>\n  ${e.notes?`<p style="margin-top:20px;color:#666;font-style:italic">${e.notes}</p>`:""}\n  <button onclick="window.print()" style="margin-top:20px;padding:10px 24px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:15px">🖨️ Imprimer</button>\n  </body></html>`), s.document.close()
+  s.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${invoiceLabel}</title>\n  <style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;color:#333}\n  h1{color:#1e3a5f}.header{display:flex;justify-content:space-between;margin-bottom:30px}\n  table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:10px;border:1px solid #ddd;text-align:left}\n  th{background:#f5f5f5}.total-row{font-weight:bold;background:#f9f9f9}\n  .status{padding:4px 12px;border-radius:4px;font-size:13px;font-weight:bold}\n  .paid{background:#d1fae5;color:#065f46}.due{background:#fee2e2;color:#991b1b}\n  @media print{button{display:none}}</style></head><body>\n  <div class="header">\n  <div>${l.logoUrl?`<img src="${l.logoUrl}" style="height:50px;margin-bottom:8px"><h1>${l.hotelName}</h1>`:`<h1>🏨 ${l.hotelName}</h1>`}<p>${invoiceLabel} N° ${e.id?.slice(0,8).toUpperCase()}</p><p>Date: ${fmtDate(e.date)}</p></div>\n  <div style="text-align:right"><p><strong>Client:</strong> ${a?`${a.lastName} ${a.firstName}`:t?.clientName||e.clientName||"—"}</p>\n  ${a?.company?`<p>${a.company}</p>`:""}${a?.email?`<p>${a.email}</p>`:""}${a?.phone?`<p>${a.phone}</p>`:""}</div></div>\n  ${t?`<table><tr><th>Chambre</th><th>Arrivée</th><th>Départ</th><th>Nuits</th></tr>\n  <tr><td>${n?.name||"—"}</td><td>${fmtDate(t?.checkIn)}</td><td>${fmtDate(t?.checkOut)}</td><td>${c}</td></tr></table>`:""}\n  <table><tr><th>Description</th><th style="text-align:center">Qte</th><th style="text-align:right">P.U.</th><th style="text-align:right">Montant</th></tr>\n  ${(e.lines||[]).map(e=>`<tr><td>${e.desc}</td><td style="text-align:center">${e.qty||1}</td><td style="text-align:right">${e.pu!=null?fmt(e.pu)+" F":"-"}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  <tr class="total-row"><td colspan="3">TOTAL TTC</td><td style="text-align:right">${fmt(o)} F CFA</td></tr></table>\n  <table><tr><th>Mode</th><th>Date</th><th>Note</th><th style="text-align:right">Montant</th></tr>\n  ${(e.payments||[]).map(e=>`<tr><td>${e.mode}</td><td>${fmtDate(e.date)}</td><td>${e.note||""}</td><td style="text-align:right">${fmt(e.amount)} F CFA</td></tr>`).join("")}\n  </table>\n  <div style="text-align:right;margin-top:20px">\n  <p>Total encaissé: <strong>${fmt(r)} F CFA</strong></p>\n  <p>Restant dû: <strong class="${i<=0?"paid":"due"}" style="padding:4px 12px;border-radius:4px">${fmt(i)} F CFA</strong></p></div>\n  ${e.notes?`<p style="margin-top:20px;color:#666;font-style:italic">${e.notes}</p>`:""}\n  <button onclick="window.print()" style="margin-top:20px;padding:10px 24px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:15px">🖨️ Imprimer</button>\n  </body></html>`), s.document.close()
 }
 
 function Modal({
@@ -13080,7 +13113,12 @@ function AuthScreen() {
 }
 
 function App() {
-  const [e, t] = useState(!1), [a, n] = useState(null), [l, o] = useState(null), [r, i] = useState(""), [c, s] = useState(null), [d, m] = useState([]), [p, u] = useState([]), [y, f] = useState([]), [g, b] = useState([]), [R, h] = useState([]), [E, v] = useState(!0), [S, x] = useState("planning"), [k, C] = useState(null), [I, z] = useState(!1);
+  const [e, t] = useState(!1), [a, n] = useState(null), [l, o] = useState(null), [r, i] = useState(""), [c, s] = useState(null), [d, m] = useState([]), [p, u] = useState([]), [y, f] = useState([]), [g, b] = useState([]), [R, h] = useState([]), [E, v] = useState(!0), [S, x] = useState("planning"), [k, C] = useState(null), [I, z] = useState(!1), [mob, setMob] = useState(window.innerWidth <= 820), [mobMenu, setMobMenu] = useState(!1);
+  useEffect(() => {
+    const onResize = () => setMob(window.innerWidth <= 820);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   if (useEffect(() => {
       const e = auth.onAuthStateChanged(async e => {
         if (n(e), i(""), e) try {
@@ -13236,8 +13274,24 @@ function App() {
       fontFamily: "'Segoe UI', sans-serif",
       overflow: "hidden"
     }
-  }, React.createElement("aside", {
-    style: {
+  }, mob && mobMenu && React.createElement("div", {
+    onClick: () => setMobMenu(!1),
+    style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 199 }
+  }), React.createElement("aside", {
+    style: mob ? {
+      width: 220,
+      background: "#1e293b",
+      display: "flex",
+      flexDirection: "column",
+      borderRight: "1px solid #334155",
+      flexShrink: 0,
+      position: "fixed",
+      top: 0,
+      bottom: 0,
+      left: mobMenu ? 0 : -240,
+      zIndex: 200,
+      transition: "left 0.2s ease"
+    } : {
       width: 220,
       background: "#1e293b",
       display: "flex",
@@ -13295,7 +13349,7 @@ function App() {
     }
   }, T.map(e => React.createElement("button", {
     key: e.id,
-    onClick: () => x(e.id),
+    onClick: () => { x(e.id); mob && setMobMenu(!1); },
     style: {
       display: "flex",
       alignItems: "center",
@@ -13359,22 +13413,31 @@ function App() {
     }
   }, React.createElement("header", {
     style: {
-      padding: "16px 24px",
+      padding: mob ? "12px 14px" : "16px 24px",
       borderBottom: "1px solid #1e293b",
       background: "#0f172a",
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
-      flexShrink: 0
+      flexShrink: 0,
+      gap: 10
     }
-  }, React.createElement("h1", {
+  }, React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, minWidth: 0 } },
+    mob && React.createElement("button", {
+      onClick: () => setMobMenu(v => !v),
+      style: { background: "#1e293b", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", fontSize: 18, padding: "4px 10px", cursor: "pointer", flexShrink: 0 }
+    }, "☰"),
+    React.createElement("h1", {
     style: {
       margin: 0,
-      fontSize: 20,
+      fontSize: mob ? 16 : 20,
       fontWeight: 700,
-      color: "#f1f5f9"
+      color: "#f1f5f9",
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis"
     }
-  }, T.find(e => e.id === S)?.icon, " ", T.find(e => e.id === S)?.label), React.createElement("div", {
+  }, T.find(e => e.id === S)?.icon, " ", T.find(e => e.id === S)?.label)), !mob && React.createElement("div", {
     style: {
       fontSize: 13,
       color: "#64748b"
@@ -13417,14 +13480,16 @@ function App() {
     style: {
       flex: 1,
       overflow: "auto",
-      padding: "24px"
+      padding: mob ? "12px" : "24px"
     }
   }, "dashboard" === S && React.createElement(Dashboard, {
     hotelData: N,
-    user: w
+    user: w,
+    mob: mob
   }), "comptabilite" === S && React.createElement(Comptabilite, {
     hotelData: N,
-    user: w
+    user: w,
+    mob: mob
   }), "planning" === S && React.createElement(Planning, {
     hotelData: N,
     setModal: C
@@ -13442,7 +13507,8 @@ function App() {
     user: w
   }), "restaurant" === S && React.createElement(Restaurant, {
     hotelData: N,
-    user: w
+    user: w,
+    setModal: C
   }), "settings" === S && ("admin" === w.role || "platformAdmin" === w.role) && React.createElement(Settings, {
     hotelData: N,
     user: w
