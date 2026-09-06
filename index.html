@@ -12450,9 +12450,9 @@ function InvoiceModal({
     style: {
       fontSize: 18,
       fontWeight: 700,
-      color: Seff > 0 ? "#f87171" : "#64748b"
+      color: Seff > 0 ? "#f87171" : Seff < 0 ? "#4ade80" : "#64748b"
     }
-  }, fmt(Math.max(0, Seff)), " F"))), React.createElement("div", {
+  }, Seff < 0 ? "+ " : "", fmt(Seff), " F"))), React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
