@@ -8478,7 +8478,13 @@ const {
   if (!e) return 0;
   const n = getActiveSeason(t, a);
   return n ? Math.round(e.baseRate * n.multiplier) : e.baseRate
-}, findRoomConflict = (e, t, a, n, l) => e.find(e => e.id !== l && e.roomId === t && "cancelled" !== e.status && a < e.checkOut && n > e.checkIn), dateRangesOverlap = (e, t, a, n) => e < n && t > a, findMaintenanceConflict = (e, t, a, n, l) => (e || []).find(e => e.id !== l && e.roomId === t && dateRangesOverlap(a, n, e.from, e.to)), dayNames = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"], downloadBackupJson = e => {
+}, findRoomConflict = (e, t, a, n, l) => e.find(e => e.id !== l && e.roomId === t && "cancelled" !== e.status && a < e.checkOut && n > e.checkIn), dateRangesOverlap = (e, t, a, n) => e < n && t > a, findMaintenanceConflict = (e, t, a, n, l) => (e || []).find(e => e.id !== l && e.roomId === t && dateRangesOverlap(a, n, e.from, e.to)),
+isAvoir = inv => !!inv && "avoir" === inv.type,
+findRealInvoiceByResa = (invoices, resaId) => (invoices || []).find(i => i.reservationId === resaId && !isAvoir(i)),
+avoirsForInvoice = (invoices, invoiceId) => (invoices || []).filter(i => isAvoir(i) && i.avoirOf === invoiceId),
+avoirsTotal = (invoices, invoiceId) => avoirsForInvoice(invoices, invoiceId).reduce((s, av) => s + (av.total || 0), 0),
+effectiveInvoiceTotal = (invoices, invoice) => (invoice?.total || 0) + avoirsTotal(invoices, invoice?.id),
+dayNames = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"], downloadBackupJson = e => {
   const t = JSON.stringify(e, null, 2),
     a = new Blob([t], {
       type: "application/json"
@@ -9865,7 +9871,7 @@ function Reservations({
       n = r.find(t => t.id === e.roomId),
       l = STATUS_CONFIG[e.status] || STATUS_CONFIG.confirmed,
       o = daysBetween(e.checkIn, e.checkOut),
-      i = s.find(t => t.reservationId === e.id);
+      i = findRealInvoiceByResa(s, e.id);
     return React.createElement("tr", {
       key: e.id,
       style: {
@@ -10100,14 +10106,14 @@ function Invoices({
     clients: i,
     rooms: c,
     invoices: s
-  } = e, d = s.filter(e => {
+  } = e, d = s.filter(e => !isAvoir(e)).filter(e => {
     const t = r.find(t => t.id === e.reservationId),
       n = t ? i.find(e => e.id === t.clientId) : null,
       o = (n ? `${n.lastName} ${n.firstName}` : t?.clientName || e.clientName || "").toLowerCase().includes(a.toLowerCase()) || e.id.includes(a),
-      c = (e.total || 0) - (e.paid || 0);
+      c = effectiveInvoiceTotal(s, e) - (e.paid || 0);
     return o && ("all" === l || "unpaid" === l && c > 0 || "paid" === l && c <= 0)
-  }).sort((e, t) => t.date.localeCompare(e.date)), m = s.reduce((e, t) => e + (t.paid || 0), 0), p = s.reduce((e, t) => e + Math.max(0, (t.total || 0) - (t.paid || 0)), 0), isAdmin = "admin" === isUser.role;
-  const resasSansFacture = r.filter(resa => "cancelled" !== resa.status && !s.find(inv => inv.reservationId === resa.id));
+  }).sort((e, t) => t.date.localeCompare(e.date)), m = s.filter(e => !isAvoir(e)).reduce((e, t) => e + (t.paid || 0), 0), p = s.filter(e => !isAvoir(e)).reduce((e, t) => e + Math.max(0, effectiveInvoiceTotal(s, t) - (t.paid || 0)), 0), isAdmin = "admin" === isUser.role;
+  const resasSansFacture = r.filter(resa => "cancelled" !== resa.status && !findRealInvoiceByResa(s, resa.id));
   const pkFiltered = resasSansFacture.filter(resa => {
     const cl = i.find(cc => cc.id === resa.clientId);
     const nom = cl ? `${cl.lastName} ${cl.firstName}` : resa.clientName || "";
@@ -10384,7 +10390,7 @@ function Restaurant({ hotelData: e, user: t, setModal: sm }) {
         setCart([]); setWalkInName(""); setMsg("✓ Facture restaurant créée.");
         sm && sm({ type: "invoice", data: inv });
       } else {
-        const inv = o.find(i => i.reservationId === selResa.id);
+        const inv = findRealInvoiceByResa(o, selResa.id);
         if (inv && inv.locked) return setMsg("⚠️ Facture déjà verrouillée (🔒 Facturée) — impossible d'ajouter des lignes. Encaissez directement ou faites un avoir.");
         if (inv) {
           await invRef.doc(inv.id).update({ lines: [...inv.lines, ...newLines] });
@@ -10506,19 +10512,19 @@ function Comptabilite({ hotelData: e, user: t, mob: mb }) {
   const encaisseJour = encJour.total;
   const resteResas = a.filter(resa => {
     if ("cancelled" === resa.status) return false;
-    const inv = o.find(i => i.reservationId === resa.id);
+    const inv = findRealInvoiceByResa(o, resa.id);
     if (inv) {
       const paye = (inv.payments || []).reduce((s, p) => s + (p.amount || 0), 0);
-      return (inv.total || 0) - paye > 0;
+      return effectiveInvoiceTotal(o, inv) - paye > 0;
     }
     const nuits = daysBetween(resa.checkIn, resa.checkOut);
     return (resa.rate || 0) * nuits - (resa.deposit || 0) > 0;
   });
   const resteTotal = resteResas.reduce((acc, resa) => {
-    const inv = o.find(i => i.reservationId === resa.id);
+    const inv = findRealInvoiceByResa(o, resa.id);
     if (inv) {
       const paye = (inv.payments || []).reduce((s, p) => s + (p.amount || 0), 0);
-      return acc + Math.max(0, (inv.total || 0) - paye);
+      return acc + Math.max(0, effectiveInvoiceTotal(o, inv) - paye);
     }
     const nuits = daysBetween(resa.checkIn, resa.checkOut);
     return acc + Math.max(0, (resa.rate || 0) * nuits - (resa.deposit || 0));
@@ -12035,7 +12041,7 @@ function InvoiceModal({
     reservations: l,
     clients: o,
     rooms: r
-  } = e, i = t.id ? t : (e.invoices.find(e => e.reservationId === t.reservationId) || null), c = l.find(e => e.id === (i?.reservationId || t.reservationId)), s = c ? o.find(e => e.id === c.clientId) : null, d = c ? r.find(e => e.id === c.roomId) : null, m = c ? daysBetween(c.checkIn, c.checkOut) : 0, [p, u] = useState(!1), [y, f] = useState(i || {
+  } = e, i = t.id ? t : (findRealInvoiceByResa(e.invoices, t.reservationId) || null), c = l.find(e => e.id === (i?.reservationId || t.reservationId)), s = c ? o.find(e => e.id === c.clientId) : null, d = c ? r.find(e => e.id === c.roomId) : null, m = c ? daysBetween(c.checkIn, c.checkOut) : 0, [p, u] = useState(!1), [av, setAv] = useState(!1), [y, f] = useState(i || {
     id: uid(),
     reservationId: c?.id,
     date: today(),
@@ -12079,7 +12085,8 @@ function InvoiceModal({
     }
     var t
   };
-  return React.createElement(Modal, {
+  const myAvoirs = avoirsForInvoice(e.invoices, y.id), avoirsSum = myAvoirs.reduce((s2, av2) => s2 + (av2.total || 0), 0), Eeff = E + avoirsSum, Seff = Eeff - v, tropPercu = v > Eeff ? v - Eeff : 0;
+  return React.createElement(React.Fragment, null, React.createElement(Modal, {
     title: invoiceTitle,
     onClose: a,
     width: 640
@@ -12377,7 +12384,22 @@ function InvoiceModal({
       })
     },
     style: btnStyle("#10b981")
-  }, "+ Encaisser"))), React.createElement("div", {
+  }, "+ Encaisser"))), myAvoirs.length > 0 && React.createElement("div", {
+    style: { marginBottom: 16 }
+  }, React.createElement("div", {
+    style: { fontSize: 13, color: "#94a3b8", fontWeight: 600, marginBottom: 8 }
+  }, "Avoirs émis (", myAvoirs.length, ")"), myAvoirs.map(av2 => React.createElement("div", {
+    key: av2.id,
+    style: { display: "flex", gap: 8, padding: "6px 0", borderBottom: "1px solid #334155", fontSize: 13, alignItems: "center" }
+  }, React.createElement("span", { style: { color: "#64748b", width: 80 } }, fmtDate(av2.date)),
+     React.createElement("span", { style: { color: "#e2e8f0", flex: 1 } }, "AV-", av2.id.slice(0, 6).toUpperCase(), " — ", av2.motif || "—"),
+     React.createElement("span", { style: { color: "#f87171", fontWeight: 600 } }, fmt(av2.total), " F"),
+     React.createElement("button", {
+       onClick: () => printAvoir(av2, y, c, s, d, e),
+       style: { ...btnStyle("#334155"), padding: "4px 8px", fontSize: 11 }
+     }, "🖨️")))), tropPercu > 0 && React.createElement("div", {
+    style: { fontSize: 12, color: "#4ade80", background: "#052e1622", border: "1px solid #166534", borderRadius: 6, padding: "6px 10px", marginBottom: 8 }
+  }, "💚 Crédit client : ", fmt(tropPercu), " F (trop-perçu suite à avoir — pas de remboursement automatique)"), React.createElement("div", {
     style: {
       background: "#0f172a",
       borderRadius: 8,
@@ -12400,7 +12422,7 @@ function InvoiceModal({
       fontWeight: 700,
       color: "#f1f5f9"
     }
-  }, fmt(E), " F")), React.createElement("div", {
+  }, fmt(E), " F"), avoirsSum < 0 && React.createElement("div", { style: { fontSize: 11, color: "#f87171", marginTop: 2 } }, "Avoirs: ", fmt(avoirsSum), " F")), React.createElement("div", {
     style: {
       textAlign: "center"
     }
@@ -12428,9 +12450,9 @@ function InvoiceModal({
     style: {
       fontSize: 18,
       fontWeight: 700,
-      color: S > 0 ? "#f87171" : "#64748b"
+      color: Seff > 0 ? "#f87171" : "#64748b"
     }
-  }, fmt(S), " F"))), React.createElement("div", {
+  }, fmt(Math.max(0, Seff)), " F"))), React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -12440,7 +12462,7 @@ function InvoiceModal({
   }, React.createElement("button", {
     onClick: a,
     style: btnStyle("#334155")
-  }, "Annuler"), isAdmin && y.locked && React.createElement("button", {
+  }, "Annuler"), isAdmin && y.locked && y.id && 0 === v && y.date === today() && React.createElement("button", {
     onClick: async () => {
       if (!confirm("Déverrouiller cette facture pour permettre la modification des lignes ?")) return;
       u(!0);
@@ -12450,8 +12472,12 @@ function InvoiceModal({
       } finally { u(!1) }
     },
     disabled: p,
-    style: { ...btnStyle("#7f1d1d"), opacity: p ? .7 : 1 }
-  }, "🔓 Déverrouiller"), !y.locked && React.createElement("button", {
+    style: { ...btnStyle("#7f1d1d"), opacity: p ? .7 : 1 },
+    title: "Réservé aux corrections de saisie le jour même, avant tout encaissement"
+  }, "🔓 Déverrouiller"), isAdmin && y.locked && y.id && React.createElement("button", {
+    onClick: () => setAv(!0),
+    style: btnStyle("#a855f7")
+  }, "🧾 + Avoir"), !y.locked && React.createElement("button", {
     onClick: async () => {
       if (!confirm("Verrouiller cette facture ? Les lignes ne pourront plus être modifiées (les encaissements resteront possibles).")) return;
       u(!0);
@@ -12489,7 +12515,129 @@ function InvoiceModal({
       ...btnStyle("#2563eb"),
       opacity: p ? .7 : 1
     }
-  }, p ? "Enregistrement…" : "Enregistrer")))
+  }, p ? "Enregistrement…" : "Enregistrer"))), av && React.createElement(AvoirModal, {
+    hotelId: n,
+    invoice: { ...y, total: E, paid: v },
+    onClose: () => setAv(!1)
+  }))
+}
+
+function AvoirModal({ hotelId, invoice, onClose }) {
+  const [mode, setMode] = useState("total"), [motif, setMotif] = useState(""), [sel, setSel] = useState(() => {
+    const o = {};
+    (invoice.lines || []).forEach((l, i) => { o[i] = true });
+    return o;
+  }), [saving, setSaving] = useState(false), [err, setErr] = useState("");
+  const lines = invoice.lines || [];
+  const selectedLines = mode === "total" ? lines : lines.filter((l, i) => sel[i]);
+  const montant = selectedLines.reduce((s, l) => s + (l.amount || 0), 0);
+  const dejaAvoir = 0; // le montant restant credité est vérifié côté InvoiceModal via avoirsForInvoice
+  const submit = async () => {
+    setErr("");
+    if (!motif.trim()) return setErr("Le motif est obligatoire.");
+    if (!selectedLines.length || montant <= 0) return setErr("Sélectionnez au moins une ligne avec un montant positif.");
+    setSaving(true);
+    try {
+      const id = uid();
+      const av = {
+        id,
+        type: "avoir",
+        avoirOf: invoice.id,
+        reservationId: invoice.reservationId || null,
+        clientName: invoice.clientName || null,
+        date: today(),
+        motif: motif.trim(),
+        lines: selectedLines.map(l => ({ desc: l.desc, amount: -Math.abs(l.amount || 0) })),
+        total: -Math.abs(montant),
+        paid: 0,
+        payments: [],
+        locked: true
+      };
+      await db.collection("hotels").doc(hotelId).collection("invoices").doc(id).set(av);
+      onClose();
+    } catch (e) {
+      setErr("Erreur lors de l'enregistrement : " + (e.message || "veuillez réessayer."));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return React.createElement(Modal, {
+    title: "Nouvel avoir (note de crédit)",
+    onClose,
+    width: 520
+  }, React.createElement("div", {
+    style: { fontSize: 12, color: "#94a3b8", marginBottom: 12, lineHeight: 1.5 }
+  }, "La facture d'origine n'est jamais modifiée. Cet avoir crée un document séparé qui réduit le montant dû (ou crée un crédit client si déjà payé)."),
+  React.createElement("div", { style: { display: "flex", gap: 4, marginBottom: 14, background: "#0f172a", borderRadius: 8, padding: 4 } },
+    React.createElement("button", {
+      onClick: () => setMode("total"),
+      style: { flex: 1, padding: "8px", background: mode === "total" ? "#a855f7" : "transparent", border: "none", borderRadius: 6, color: mode === "total" ? "#fff" : "#94a3b8", cursor: "pointer", fontSize: 12, fontWeight: 600 }
+    }, "Avoir total"),
+    React.createElement("button", {
+      onClick: () => setMode("partiel"),
+      style: { flex: 1, padding: "8px", background: mode === "partiel" ? "#a855f7" : "transparent", border: "none", borderRadius: 6, color: mode === "partiel" ? "#fff" : "#94a3b8", cursor: "pointer", fontSize: 12, fontWeight: 600 }
+    }, "Avoir partiel")
+  ),
+  "partiel" === mode && React.createElement("div", { style: { marginBottom: 12 } },
+    React.createElement("div", { style: { fontSize: 12, color: "#94a3b8", marginBottom: 6 } }, "Sélectionnez les lignes à créditer :"),
+    lines.map((l, i) => React.createElement("label", {
+      key: i,
+      style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid #334155", fontSize: 13, cursor: "pointer" }
+    }, React.createElement("input", {
+      type: "checkbox",
+      checked: !!sel[i],
+      onChange: e => setSel({ ...sel, [i]: e.target.checked })
+    }), React.createElement("span", { style: { flex: 1, color: "#e2e8f0" } }, l.desc),
+       React.createElement("span", { style: { color: "#f87171" } }, fmt(l.amount), " F")))
+  ),
+  "total" === mode && React.createElement("div", { style: { marginBottom: 12, fontSize: 13, color: "#94a3b8" } },
+    "Toutes les lignes de la facture seront créditées."
+  ),
+  React.createElement("div", null,
+    React.createElement("label", { style: labelStyle }, "Motif (obligatoire)"),
+    React.createElement("textarea", {
+      value: motif,
+      onChange: e => setMotif(e.target.value),
+      rows: 2,
+      placeholder: "Ex: Erreur de tarif, nuit contestée par le client...",
+      style: { ...inputStyle, resize: "vertical" }
+    })
+  ),
+  React.createElement("div", {
+    style: { background: "#0f172a", borderRadius: 8, padding: 12, marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }
+  }, React.createElement("span", { style: { fontSize: 13, color: "#94a3b8" } }, "Montant de l'avoir"),
+     React.createElement("span", { style: { fontSize: 18, fontWeight: 700, color: "#f87171" } }, "- ", fmt(montant), " F")),
+  err && React.createElement("div", { style: { color: "#f87171", fontSize: 12, marginTop: 10 } }, err),
+  React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" } },
+    React.createElement("button", { onClick: onClose, style: btnStyle("#334155") }, "Annuler"),
+    React.createElement("button", {
+      onClick: submit,
+      disabled: saving,
+      style: { ...btnStyle("#a855f7"), opacity: saving ? .7 : 1 }
+    }, saving ? "Enregistrement…" : "Créer l'avoir")
+  ))
+}
+
+function printAvoir(av, invoice, resa, client, room, hotelData) {
+  const w = window.open("", "_blank");
+  const montant = Math.abs(av.total || 0);
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Avoir</title>
+  <style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;color:#333}
+  h1{color:#1e3a5f}.header{display:flex;justify-content:space-between;margin-bottom:30px}
+  table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:10px;border:1px solid #ddd;text-align:left}
+  th{background:#f5f5f5}.total-row{font-weight:bold;background:#f9f9f9}
+  @media print{button{display:none}}</style></head><body>
+  <div class="header">
+  <div>${hotelData.logoUrl ? `<img src="${hotelData.logoUrl}" style="height:50px;margin-bottom:8px"><h1>${hotelData.hotelName}</h1>` : `<h1>🏨 ${hotelData.hotelName}</h1>`}<p>Avoir N° AV-${av.id?.slice(0,6).toUpperCase()}</p><p>Sur facture N° ${invoice.id?.slice(0,8).toUpperCase()}</p><p>Date: ${fmtDate(av.date)}</p></div>
+  <div style="text-align:right"><p><strong>Client:</strong> ${client ? `${client.lastName} ${client.firstName}` : resa?.clientName || invoice.clientName || "—"}</p></div></div>
+  <p style="margin-bottom:12px"><strong>Motif :</strong> ${av.motif || "—"}</p>
+  <table><tr><th>Description</th><th style="text-align:right">Montant</th></tr>
+  ${(av.lines || []).map(l => `<tr><td>${l.desc}</td><td style="text-align:right">${fmt(l.amount)} F CFA</td></tr>`).join("")}
+  <tr class="total-row"><td>TOTAL AVOIR</td><td style="text-align:right">- ${fmt(montant)} F CFA</td></tr></table>
+  <p style="margin-top:20px;color:#666;font-size:12px">Cet avoir ne modifie pas la facture d'origine ; il vient en déduction du montant dû.</p>
+  <button onclick="window.print()" style="margin-top:20px;padding:10px 24px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:15px">🖨️ Imprimer</button>
+  </body></html>`);
+  w.document.close();
 }
 
 function printInvoice(e, t, a, n, l, isAdmin = true) {
