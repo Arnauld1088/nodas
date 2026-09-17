@@ -8342,7 +8342,10 @@ async function signIn({
   email: e,
   password: t
 }) {
-  await auth.signInWithEmailAndPassword(e, t)
+  const cred = await auth.signInWithEmailAndPassword(e, t);
+  cred?.user?.uid && db.collection("userProfiles").doc(cred.user.uid).update({
+    lastLogin: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(() => {});
 }
 async function signOutUser() {
   await auth.signOut()
@@ -8480,10 +8483,44 @@ const {
   return n ? Math.round(e.baseRate * n.multiplier) : e.baseRate
 }, findRoomConflict = (e, t, a, n, l) => e.find(e => e.id !== l && e.roomId === t && "cancelled" !== e.status && a < e.checkOut && n > e.checkIn), dateRangesOverlap = (e, t, a, n) => e < n && t > a, findMaintenanceConflict = (e, t, a, n, l) => (e || []).find(e => e.id !== l && e.roomId === t && dateRangesOverlap(a, n, e.from, e.to)),
 isAvoir = inv => !!inv && "avoir" === inv.type,
+isRemboursement = inv => !!inv && "remboursement" === inv.type,
+findGroupInvoice = (invoices, groupId) => (invoices || []).find(iv => iv.groupId === groupId && !isAvoir(iv) && !isRemboursement(iv)),
 findRealInvoiceByResa = (invoices, resaId) => (invoices || []).find(i => i.reservationId === resaId && !isAvoir(i)),
 avoirsForInvoice = (invoices, invoiceId) => (invoices || []).filter(i => isAvoir(i) && i.avoirOf === invoiceId),
 avoirsTotal = (invoices, invoiceId) => avoirsForInvoice(invoices, invoiceId).reduce((s, av) => s + (av.total || 0), 0),
 effectiveInvoiceTotal = (invoices, invoice) => (invoice?.total || 0) + avoirsTotal(invoices, invoice?.id),
+computeClientCredits = (invoices, reservations, clients, rooms, pf, pt) => {
+  const map = {};
+  const ensure = (key, label, clientId) => { if (!map[key]) map[key] = { key, label, clientId: clientId || null, overpay: 0, creditUsed: 0, avoirs: [] }; return map[key]; };
+  (invoices || []).filter(inv => !isAvoir(inv) && !isRemboursement(inv)).forEach(inv => {
+    const resa = (reservations || []).find(r => r.id === inv.reservationId);
+    if (resa && "cancelled" === resa.status) return;
+    if (pf && (inv.date < pf || inv.date > pt)) return;
+    const client = resa ? (clients || []).find(c => c.id === resa.clientId) : null;
+    const room = resa ? (rooms || []).find(r => r.id === resa.roomId) : null;
+    const key = client ? "id:" + client.id : "name:" + ((resa?.clientName || inv.clientName || "").trim().toLowerCase());
+    if ("name:" === key) return;
+    const label = client ? `${client.lastName} ${client.firstName}` : (resa?.clientName || inv.clientName || "Client sans nom");
+    const entry = ensure(key, label, client?.id);
+    const eff = effectiveInvoiceTotal(invoices, inv);
+    const realPaid = (inv.payments || []).filter(p => "Crédit client" !== p.mode).reduce((s, p) => s + (p.amount || 0), 0);
+    const creditUsed = (inv.payments || []).filter(p => "Crédit client" === p.mode).reduce((s, p) => s + (p.amount || 0), 0);
+    entry.overpay += Math.max(0, realPaid - eff);
+    entry.creditUsed += creditUsed;
+    avoirsForInvoice(invoices, inv.id).forEach(av => entry.avoirs.push({ avoir: av, invoice: inv, resa, client, room }));
+  });
+  (invoices || []).filter(isRemboursement).forEach(inv => {
+    if (pf && (inv.date < pf || inv.date > pt)) return;
+    const client = inv.clientId ? (clients || []).find(c => c.id === inv.clientId) : null;
+    const key = client ? "id:" + client.id : "name:" + ((inv.clientName || "").trim().toLowerCase());
+    if ("name:" === key) return;
+    const label = client ? `${client.lastName} ${client.firstName}` : (inv.clientName || "Client sans nom");
+    const entry = ensure(key, label, client?.id);
+    entry.creditUsed += Math.abs(inv.total || 0);
+  });
+  Object.values(map).forEach(v => v.credit = v.overpay - v.creditUsed);
+  return map;
+},
 dayNames = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"], downloadBackupJson = e => {
   const t = JSON.stringify(e, null, 2),
     a = new Blob([t], {
@@ -9421,6 +9458,9 @@ function Settings({
     id: "restaurant",
     label: "Restaurant"
   }, {
+    id: "expenses",
+    label: "Dépenses"
+  }, {
     id: "users",
     label: "Utilisateurs"
   }, {
@@ -9456,6 +9496,9 @@ function Settings({
   }), "restaurant" === a && React.createElement(MenuSettings, {
     hotelId: e.id,
     menuItems: e.menuItems
+  }), "expenses" === a && React.createElement(ExpenseCategoriesSettings, {
+    hotelId: e.id,
+    expenseCategories: e.expenseCategories
   }), "users" === a && React.createElement(UsersSettings, {
     user: t
   }), "backup" === a && React.createElement(BackupSettings, {
@@ -9467,9 +9510,10 @@ function Settings({
 
 function Planning({
   hotelData: e,
-  setModal: t
+  setModal: t,
+  mob: mob
 }) {
-  const [a, n] = useState(today()), [l, o] = useState(15), [hd, setHd] = useState(false), {
+  const [a, n] = useState(today()), [l, o] = useState(mob ? 7 : 15), [hd, setHd] = useState(false), {
     rooms: r,
     reservations: i,
     clients: c
@@ -9774,7 +9818,8 @@ function Planning({
 
 function Reservations({
   hotelData: e,
-  setModal: t
+  setModal: t,
+  mob: mob
 }) {
   const [a, n] = useState(""), [l, o] = useState("all"), {
     rooms: r,
@@ -9832,7 +9877,40 @@ function Reservations({
       data: {}
     }),
     style: btnStyle("#2563eb")
-  }, "+ Nouvelle réservation")), React.createElement("div", {
+  }, "+ Nouvelle réservation")), mob ? React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+    0 === d.length && React.createElement("div", { style: { padding: 24, textAlign: "center", color: "#475569", background: "#1e293b", borderRadius: 12 } }, "Aucune réservation trouvée"),
+    d.map(e2 => {
+      const a2 = c.find(t2 => t2.id === e2.clientId),
+        n2 = r.find(t2 => t2.id === e2.roomId),
+        l2 = STATUS_CONFIG[e2.status] || STATUS_CONFIG.confirmed,
+        o2 = daysBetween(e2.checkIn, e2.checkOut),
+        i2 = findRealInvoiceByResa(s, e2.id);
+      return React.createElement("div", {
+        key: e2.id, style: { background: "#1e293b", borderRadius: 12, padding: 14, border: "1px solid #334155" }
+      },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8, flexWrap: "wrap", gap: 6 } },
+          React.createElement("div", null,
+            React.createElement("span", { style: { padding: "2px 8px", borderRadius: 4, background: l2.color, color: "paid" === e2.status ? "#000" : "#fff", fontSize: 11, fontWeight: 600 } }, l2.label),
+            e2.isVip && React.createElement("span", { style: { marginLeft: 4 } }, "⭐"),
+            e2.isGroup && React.createElement("span", { style: { marginLeft: 4 }, title: "Réservation de groupe" }, "👥"),
+            e2.alerts?.length > 0 && React.createElement("span", { style: { marginLeft: 4 } }, "⚠️"),
+            e2.arrivalTime && React.createElement("div", { style: { fontSize: 10, color: "#4ade80", marginTop: 2 } }, "🕐 Arrivé à ", new Date(e2.arrivalTime).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }))
+          ),
+          React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "#10b981" } }, i2 ? `${fmt(i2.total)} F` : `${fmt(e2.rate * o2)} F`)
+        ),
+        React.createElement("div", { style: { fontSize: 13, color: "#e2e8f0", fontWeight: 600 } }, a2 ? `${a2.lastName} ${a2.firstName}` : e2.clientName || "-"),
+        React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginTop: 2, marginBottom: 10 } }, n2?.name || "-", " · ", fmtDate(e2.checkIn), " → ", fmtDate(e2.checkOut), " · ", o2, " nuit", 1 !== o2 ? "s" : ""),
+        React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+          React.createElement("button", { onClick: () => t({ type: "reservation", data: e2 }), style: { ...btnStyle("#334155"), flex: 1, fontSize: 12 } }, "Modifier"),
+          "confirmed" === e2.status && React.createElement("button", {
+            onClick: () => db.collection("hotels").doc(hid).collection("reservations").doc(e2.id).update({ status: "arrived", arrivalTime: new Date().toISOString() }),
+            style: { ...btnStyle("#10b981"), flex: 1, fontSize: 12 }
+          }, "✓ Arrivée"),
+          React.createElement("button", { onClick: () => "consolidated" === e2.groupPaymentMode ? t({ type: "invoice", data: { groupId: e2.groupId } }) : t({ type: "invoice", data: { reservationId: e2.id } }), style: { ...btnStyle("#2563eb"), flex: 1, fontSize: 12 } }, "consolidated" === e2.groupPaymentMode ? "Facture groupée" : "Facture")
+        )
+      );
+    })
+  ) : React.createElement("div", {
     style: {
       background: "#1e293b",
       borderRadius: 12,
@@ -9959,7 +10037,12 @@ function Reservations({
         marginRight: 4
       }
     }, "✓ Arrivée"), React.createElement("button", {
-      onClick: () => t({
+      onClick: () => "consolidated" === e.groupPaymentMode ? t({
+        type: "invoice",
+        data: {
+          groupId: e.groupId
+        }
+      }) : t({
         type: "invoice",
         data: {
           reservationId: e.id
@@ -9970,7 +10053,7 @@ function Reservations({
         padding: "4px 8px",
         fontSize: 11
       }
-    }, "Facture")))
+    }, "consolidated" === e.groupPaymentMode ? "Facture groupée" : "Facture")))
   })))))
 }
 
@@ -10099,7 +10182,8 @@ function Clients({
 function Invoices({
   hotelData: e,
   setModal: t,
-  user: isUser
+  user: isUser,
+  mob: mob
 }) {
   const [a, n] = useState(""), [l, o] = useState("all"), [showPk, setShowPk] = useState(false), [pkSearch, setPkSearch] = useState(""), {
     reservations: r,
@@ -10242,7 +10326,33 @@ function Invoices({
         React.createElement("span", { style: { color: "#64748b" } }, fmtDate(resa.checkIn), " → ", fmtDate(resa.checkOut))
       );
     })
-  ), React.createElement("div", {
+  ), mob ? React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+    0 === d.length && React.createElement("div", { style: { padding: 24, textAlign: "center", color: "#475569", background: "#1e293b", borderRadius: 12 } }, "Aucune facture"),
+    d.map(a => {
+      const n = r.find(e2 => e2.id === a.reservationId),
+        l = n ? i.find(e2 => e2.id === n.clientId) : null,
+        o = n ? c.find(e2 => e2.id === n.roomId) : null,
+        s = Math.max(0, effectiveInvoiceTotal(d, a) - (a.paid || 0));
+      return React.createElement("div", {
+        key: a.id, style: { background: "#1e293b", borderRadius: 12, padding: 14, border: "1px solid #334155" }
+      },
+        React.createElement("div", { style: { fontSize: 14, fontWeight: 600, color: "#e2e8f0" } },
+          l ? `${l.lastName} ${l.firstName}` : n?.clientName || a.clientName || "-",
+          n && "cancelled" === n.status && React.createElement("span", { style: { marginLeft: 6, fontSize: 10, color: "#f87171", border: "1px solid #f87171", borderRadius: 4, padding: "1px 5px" } }, "⚠️ Annulée")
+        ),
+        React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginTop: 2, marginBottom: 8 } }, a.id.slice(0, 8).toUpperCase(), " · ", fmtDate(a.date), " · ", o?.name || (a.groupId ? "👥 Groupe" : (a.standalone ? "🍽️ Restaurant" : "-"))),
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, paddingTop: 8, borderTop: "1px solid #0f172a", flexWrap: "wrap", gap: 6 } },
+          React.createElement("span", { style: { color: "#94a3b8" } }, "Total : ", React.createElement("b", { style: { color: "#f1f5f9" } }, fmt(a.total), " F")),
+          React.createElement("span", { style: { color: "#94a3b8" } }, "Payé : ", React.createElement("b", { style: { color: "#10b981" } }, fmt(a.paid), " F")),
+          React.createElement("span", { style: { color: "#94a3b8" } }, "Dû : ", React.createElement("b", { style: { color: s > 0 ? "#f87171" : "#64748b" } }, fmt(s), " F"))
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 10 } },
+          React.createElement("button", { onClick: () => t({ type: "invoice", data: a }), style: { ...btnStyle("#334155"), flex: 1, fontSize: 12 } }, "Voir"),
+          React.createElement("button", { onClick: () => printInvoice(a, n, l, o, e, isAdmin), style: { ...btnStyle("#2563eb"), flex: 1, fontSize: 12 } }, "PDF")
+        )
+      );
+    })
+  ) : React.createElement("div", {
     style: {
       background: "#1e293b",
       borderRadius: 12,
@@ -10311,7 +10421,7 @@ function Invoices({
         padding: "10px 12px",
         color: "#94a3b8"
       }
-    }, o?.name || (a.standalone ? "🍽️ Restaurant" : "-")), React.createElement("td", {
+    }, o?.name || (a.groupId ? "👥 Groupe" : (a.standalone ? "🍽️ Restaurant" : "-"))), React.createElement("td", {
       style: {
         padding: "10px 12px",
         color: "#f1f5f9",
@@ -10476,9 +10586,88 @@ function Restaurant({ hotelData: e, user: t, setModal: sm }) {
   );
 }
 
+function CreditClientReport({ hotelData: e, mob: mb, pFrom, pTo, labelPeriode, user: usr }) {
+  const { invoices: o, reservations: a, clients: cl, rooms: rm, paymentModes: pms, id: hid } = e;
+  const [scope, setScope] = useState("periode");
+  const [refundFor, setRefundFor] = useState(null);
+  const [rAmount, setRAmount] = useState(""), [rMode, setRMode] = useState(""), [rNote, setRNote] = useState(""), [rSaving, setRSaving] = useState(!1), [rMsg, setRMsg] = useState("");
+  const credits = computeClientCredits(o, a, cl, rm, "periode" === scope ? pFrom : null, "periode" === scope ? pTo : null);
+  const list = Object.values(credits).filter(c => c.credit > .01).sort((x, y) => y.credit - x.credit);
+  const totalCredit = list.reduce((s, c) => s + c.credit, 0);
+  const ref = db.collection("hotels").doc(hid).collection("invoices");
+  const ouvrirRemboursement = c => { setRefundFor(c.key); setRAmount(String(c.credit)); setRMode(""); setRNote(""); setRMsg(""); };
+  const confirmerRemboursement = async c => {
+    if (!(+rAmount > 0) || +rAmount > c.credit + .01) return setRMsg("⚠️ Montant invalide (max " + fmt(c.credit) + " F).");
+    if (!rMode) return setRMsg("⚠️ Mode de paiement requis.");
+    setRSaving(!0); setRMsg("");
+    try {
+      const id = uid();
+      await ref.doc(id).set({
+        id, type: "remboursement", date: today(), clientId: c.clientId || null, clientName: c.label,
+        total: -Math.abs(+rAmount), mode: rMode, motif: rNote.trim(), lines: [{ desc: "Remboursement client", amount: -Math.abs(+rAmount), category: "remboursement" }],
+        payments: [], paid: 0, locked: !0, createdBy: usr?.name || usr?.login || "", createdAt: new Date().toISOString()
+      });
+      setRefundFor(null);
+    } catch (e) {
+      setRMsg("Erreur : " + (e.message || "veuillez réessayer."));
+    } finally { setRSaving(!1); }
+  };
+  return React.createElement("div", { style: { background: "#1e293b", borderRadius: 12, padding: 20, marginBottom: 16 } },
+    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 } },
+      React.createElement("h3", { style: { margin: 0, fontSize: 14, color: "#94a3b8" } }, "💳 Crédit client"),
+      React.createElement("div", { style: { display: "flex", gap: 6 } },
+        React.createElement("button", { onClick: () => setScope("periode"), style: { ...btnStyle("periode" === scope ? "#2563eb" : "#334155"), padding: "6px 12px", fontSize: 12 } }, "Période sélectionnée"),
+        React.createElement("button", { onClick: () => setScope("total"), style: { ...btnStyle("total" === scope ? "#2563eb" : "#334155"), padding: "6px 12px", fontSize: 12 } }, "Historique complet")
+      )
+    ),
+    "periode" === scope && React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginBottom: 10 } }, "Sur : ", labelPeriode),
+    0 === list.length && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Aucun client avec un solde de crédit."),
+    list.length > 0 && React.createElement("div", { style: { fontSize: 13, color: "#94a3b8", marginBottom: 10 } }, "Total crédit dû aux clients : ", React.createElement("b", { style: { color: "#a78bfa" } }, fmt(totalCredit), " F")),
+    list.map(c => React.createElement("div", {
+      key: c.key, style: { background: "#0f172a", borderRadius: 8, padding: "10px 12px", marginBottom: 8 }
+    },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 } },
+        React.createElement("span", { style: { color: "#e2e8f0", fontWeight: 600, fontSize: 13 } }, c.label),
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+          React.createElement("span", { style: { color: "#a78bfa", fontWeight: 700, fontSize: 15 } }, fmt(c.credit), " F"),
+          React.createElement("button", {
+            onClick: () => refundFor === c.key ? setRefundFor(null) : ouvrirRemboursement(c),
+            style: { ...btnStyle(refundFor === c.key ? "#475569" : "#f97316"), padding: "4px 10px", fontSize: 11 }
+          }, refundFor === c.key ? "Annuler" : "💵 Rembourser")
+        )
+      ),
+      refundFor === c.key && React.createElement("div", { style: { marginTop: 10, padding: 10, background: "#1e293b", borderRadius: 8, display: "grid", gridTemplateColumns: mb ? "1fr" : "1fr 1fr 1fr auto", gap: 8 } },
+        React.createElement("input", { type: "number", value: rAmount, onChange: e2 => setRAmount(e2.target.value), placeholder: "Montant", style: inputStyle }),
+        React.createElement("select", { value: rMode, onChange: e2 => setRMode(e2.target.value), style: inputStyle },
+          React.createElement("option", { value: "" }, "Mode de paiement"),
+          (pms || []).map(p => React.createElement("option", { key: p.id, value: p.name }, p.icon, " ", p.name))
+        ),
+        React.createElement("input", { value: rNote, onChange: e2 => setRNote(e2.target.value), placeholder: "Motif (facultatif)", style: inputStyle }),
+        React.createElement("button", { onClick: () => confirmerRemboursement(c), disabled: rSaving, style: { ...btnStyle("#f97316"), opacity: rSaving ? .7 : 1 } }, rSaving ? "…" : "Confirmer"),
+        rMsg && React.createElement("div", { style: { gridColumn: "1 / -1", fontSize: 11, color: "#f87171" } }, rMsg)
+      ),
+      c.avoirs.length > 0 && React.createElement("div", { style: { marginTop: 8, display: "flex", flexDirection: "column", gap: 4 } },
+        c.avoirs.map(av => React.createElement("div", {
+          key: av.avoir.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, color: "#64748b", flexWrap: "wrap", gap: 6 }
+        },
+          React.createElement("span", null, fmtDate(av.avoir.date), " · ", av.avoir.motif || "Avoir", " (facture #", (av.invoice.id || "").slice(0, 8).toUpperCase(), ")"),
+          React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+            React.createElement("span", { style: { color: "#f87171" } }, fmt(av.avoir.total), " F"),
+            React.createElement("button", {
+              onClick: () => printInvoice(av.avoir, av.resa, av.client, av.room, e, !0),
+              style: { background: "none", border: "1px solid #334155", color: "#94a3b8", borderRadius: 4, padding: "2px 6px", fontSize: 10, cursor: "pointer" }
+            }, "🖨️ Voir")
+          )
+        ))
+      )
+    ))
+  );
+}
+
 function Comptabilite({ hotelData: e, user: t, mob: mb }) {
-  const { reservations: a, invoices: o, rooms: rm, clients: cl } = e, r = today(), isAdmin = "admin" === t.role;
+  const { reservations: a, invoices: o, rooms: rm, clients: cl, expenses: exps, expenseCategories: expCats } = e, r = today(), isAdmin = "admin" === t.role;
   const [periodeMode, setPeriodeMode] = useState("mois");
+  const [journalFilter, setJournalFilter] = useState("all");
   const nowM = (new Date).getMonth(),
     nowY = (new Date).getFullYear();
   const defaultFrom = `${nowY}-${String(nowM+1).padStart(2,"0")}-01`;
@@ -10494,7 +10683,7 @@ function Comptabilite({ hotelData: e, user: t, mob: mb }) {
       const resa = a.find(rr => rr.id === inv.reservationId);
       if (resa && "cancelled" === resa.status) return;
       (inv.payments || []).forEach(pmt => {
-        if (pmt.date >= from && pmt.date <= to) {
+        if (pmt.date >= from && pmt.date <= to && "Crédit client" !== pmt.mode) {
           if ("Acompte" === pmt.note) acomptes += (pmt.amount || 0);
           else soldes += (pmt.amount || 0);
         }
@@ -10529,10 +10718,12 @@ function Comptabilite({ hotelData: e, user: t, mob: mb }) {
     const nuits = daysBetween(resa.checkIn, resa.checkOut);
     return acc + Math.max(0, (resa.rate || 0) * nuits - (resa.deposit || 0));
   }, 0);
+  const depensesJour = (exps || []).filter(x => x.date === r).reduce((s, x) => s + (x.montant || 0), 0);
   const moisNoms = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
   const labelPeriode = periodeMode === "mois" ? moisNoms[nowM] + " " + nowY : `${fmtDate(pFrom)} → ${fmtDate(pTo)}`;
   // --- CA facturé : toutes les factures émises sur la période (payées ou non), hors résas annulées ---
   const caFacture = o.filter(inv => {
+    if (isRemboursement(inv)) return false;
     const resa = a.find(rr => rr.id === inv.reservationId);
     if (resa && "cancelled" === resa.status) return false;
     return inv.date >= pFrom && inv.date <= pTo;
@@ -10557,12 +10748,24 @@ function Comptabilite({ hotelData: e, user: t, mob: mb }) {
     const nomRoom = room?.name || (inv.standalone ? "🍽️ Restaurant" : "—");
     (inv.payments || []).forEach(pmt => {
       if (pmt.date >= pFrom && pmt.date <= pTo) {
-        const mode = pmt.mode || "Non précisé";
-        parMode[mode] = (parMode[mode] || 0) + (pmt.amount || 0);
-        journal.push({ date: pmt.date, client: nomClient, room: nomRoom, mode, note: pmt.note, amount: pmt.amount || 0 });
+        if ("Crédit client" === pmt.mode) {
+          journal.push({ date: pmt.date, client: nomClient, room: nomRoom, mode: "Crédit client", note: pmt.note || "Crédit client", amount: pmt.amount || 0, isCredit: !0 });
+        } else {
+          const mode = pmt.mode || "Non précisé";
+          parMode[mode] = (parMode[mode] || 0) + (pmt.amount || 0);
+          journal.push({ date: pmt.date, client: nomClient, room: nomRoom, mode, note: pmt.note, amount: pmt.amount || 0 });
+        }
       }
     });
-    if (inv.date >= pFrom && inv.date <= pTo) {
+    if (isAvoir(inv) && inv.date >= pFrom && inv.date <= pTo) {
+      journal.push({ date: inv.date, client: nomClient, room: inv.motif ? `Avoir — ${inv.motif}` : "Avoir", mode: "—", note: "Avoir", amount: inv.total || 0, isAvoir: !0 });
+    }
+    if (isRemboursement(inv) && inv.date >= pFrom && inv.date <= pTo) {
+      const modeR = inv.mode || "Non précisé";
+      parMode[modeR] = (parMode[modeR] || 0) + (inv.total || 0);
+      journal.push({ date: inv.date, client: nomClient, room: inv.motif ? `Remboursement — ${inv.motif}` : "Remboursement", mode: modeR, note: "Remboursement", amount: inv.total || 0, isRefund: !0 });
+    }
+    if (!isRemboursement(inv) && inv.date >= pFrom && inv.date <= pTo) {
       (inv.lines || []).forEach(line => {
         const cat = line.category || guessCategory(line.desc);
         parCategorie[cat] = (parCategorie[cat] || 0) + (line.amount || 0);
@@ -10570,6 +10773,15 @@ function Comptabilite({ hotelData: e, user: t, mob: mb }) {
     }
   });
   journal.sort((x, y) => y.date.localeCompare(x.date));
+  const parCategorieDepenses = {};
+  (exps || []).forEach(x => {
+    if (x.date >= pFrom && x.date <= pTo) {
+      const c = x.category || "Sans catégorie";
+      parCategorieDepenses[c] = (parCategorieDepenses[c] || 0) + (x.montant || 0);
+    }
+  });
+  const totalDepensesPeriode = Object.values(parCategorieDepenses).reduce((s, v) => s + v, 0);
+  const resultatNet = encaissePeriode - totalDepensesPeriode;
   return React.createElement("div", null, isAdmin && React.createElement("div", {
     style: {
       background: "#1e293b",
@@ -10737,14 +10949,26 @@ function Comptabilite({ hotelData: e, user: t, mob: mb }) {
   }, resteResas.length, " séjour", resteResas.length !== 1 ? "s" : "")))), isAdmin && React.createElement("div", {
     style: { background: "#1e293b", borderRadius: 12, padding: 20, marginBottom: 16 }
   },
-    React.createElement("h3", { style: { margin: "0 0 14px", fontSize: 14, color: "#94a3b8" } }, "📊 CA facturé & répartitions — ", React.createElement("span", { style: { color: "#c9a96e" } }, labelPeriode)),
-    React.createElement("div", { style: { display: "grid", gridTemplateColumns: mb ? "1fr" : "1fr 1fr", gap: 10, marginBottom: 16 } },
+    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 } },
+      React.createElement("h3", { style: { margin: 0, fontSize: 14, color: "#94a3b8" } }, "📊 CA facturé & répartitions — ", React.createElement("span", { style: { color: "#c9a96e" } }, labelPeriode)),
+      React.createElement("button", {
+        onClick: () => printRapportComptable(e, labelPeriode, caFacture, encaissePeriode, totalDepensesPeriode, resultatNet, parCategorieDepenses, parMode, parCategorie, journal, Object.values(computeClientCredits(o, a, cl, rm, pFrom, pTo))),
+        style: { ...btnStyle("#2563eb"), padding: "6px 14px", fontSize: 12 }
+      }, "🖨️ Imprimer le rapport")
+    ),
+    React.createElement("div", { style: { display: "grid", gridTemplateColumns: mb ? "1fr" : "repeat(4,1fr)", gap: 10, marginBottom: 16 } },
       React.createElement("div", { style: { background: "#0f172a", borderRadius: 10, padding: 14, borderLeft: "3px solid #a78bfa" } },
         React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginBottom: 4 } }, "🧾 CA facturé (émis sur la période)"),
         React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#a78bfa" } }, fmt(caFacture), " F")),
       React.createElement("div", { style: { background: "#0f172a", borderRadius: 10, padding: 14, borderLeft: "3px solid #facc15" } },
         React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginBottom: 4 } }, "💰 CA encaissé (payé sur la période)"),
-        React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#facc15" } }, fmt(encaissePeriode), " F"))
+        React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#facc15" } }, fmt(encaissePeriode), " F")),
+      React.createElement("div", { style: { background: "#0f172a", borderRadius: 10, padding: 14, borderLeft: "3px solid #f87171" } },
+        React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginBottom: 4 } }, "💸 Dépenses (sur la période)"),
+        React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#f87171" } }, fmt(totalDepensesPeriode), " F")),
+      React.createElement("div", { style: { background: "#0f172a", borderRadius: 10, padding: 14, borderLeft: `3px solid ${resultatNet >= 0 ? "#4ade80" : "#f87171"}` } },
+        React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginBottom: 4 } }, "📈 Résultat net (encaissé − dépenses)"),
+        React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: resultatNet >= 0 ? "#4ade80" : "#f87171" } }, resultatNet >= 0 ? "+" : "", fmt(resultatNet), " F"))
     ),
     React.createElement("div", { style: { marginBottom: 16 } },
       React.createElement("div", { style: { fontSize: 13, color: "#94a3b8", fontWeight: 600, marginBottom: 8 } }, "Répartition par mode de paiement"),
@@ -10761,20 +10985,42 @@ function Comptabilite({ hotelData: e, user: t, mob: mb }) {
           React.createElement("div", { style: { fontSize: 11, color: "#64748b" } }, catLabels[cat] || cat),
           React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: "#e2e8f0" } }, fmt(montant), " F"))))
     ),
+    React.createElement("div", { style: { marginBottom: 16 } },
+      React.createElement("div", { style: { fontSize: 13, color: "#94a3b8", fontWeight: 600, marginBottom: 8 } }, "Répartition des dépenses par catégorie"),
+      0 === Object.keys(parCategorieDepenses).length ? React.createElement("div", { style: { color: "#475569", fontSize: 12 } }, "Aucune dépense sur cette période.") :
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 8 } },
+          Object.entries(parCategorieDepenses).map(([cat, montant]) => React.createElement("div", { key: cat, style: { background: "#0f172a", borderRadius: 8, padding: "8px 10px" } },
+            React.createElement("div", { style: { fontSize: 11, color: "#64748b" } }, cat),
+            React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: "#f87171" } }, fmt(montant), " F"))))
+    ),
     React.createElement("div", null,
-      React.createElement("div", { style: { fontSize: 13, color: "#94a3b8", fontWeight: 600, marginBottom: 8 } }, "Journal des transactions (", journal.length, ")"),
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 } },
+        React.createElement("div", { style: { fontSize: 13, color: "#94a3b8", fontWeight: 600 } }, "Journal des transactions (", journal.filter(tx => "all" === journalFilter || ("encaissement" === journalFilter && !tx.isAvoir && !tx.isCredit && !tx.isRefund) || ("avoir" === journalFilter && tx.isAvoir) || ("credit" === journalFilter && tx.isCredit) || ("remboursement" === journalFilter && tx.isRefund)).length, ")"),
+        React.createElement("div", { style: { display: "flex", gap: 4, flexWrap: "wrap" } },
+          [["all", "Tout"], ["encaissement", "Encaissements"], ["avoir", "Avoirs"], ["credit", "Crédit client"], ["remboursement", "Remboursements"]].map(([val, lbl]) => React.createElement("button", {
+            key: val, onClick: () => setJournalFilter(val),
+            style: { ...btnStyle(journalFilter === val ? "#2563eb" : "#334155"), padding: "4px 10px", fontSize: 11 }
+          }, lbl))
+        )
+      ),
       React.createElement("div", { style: { maxHeight: 260, overflowY: "auto" } },
-        0 === journal.length && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Aucune transaction sur cette période."),
-        journal.map((tx, ix) => React.createElement("div", {
-          key: ix, style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid #334155", fontSize: 12 }
-        },
-          React.createElement("span", { style: { color: "#64748b", width: 78, flexShrink: 0 } }, fmtDate(tx.date)),
-          React.createElement("span", { style: { color: "#e2e8f0", flex: 1 } }, tx.client, " — ", tx.room),
-          React.createElement("span", { style: { color: "#94a3b8", width: 90, flexShrink: 0 } }, tx.mode),
-          React.createElement("span", { style: { color: "Acompte" === tx.note ? "#38bdf8" : "#4ade80", width: 70, flexShrink: 0, textAlign: "right" } }, tx.note || "Solde"),
-          React.createElement("span", { style: { color: "#10b981", fontWeight: 600, width: 90, flexShrink: 0, textAlign: "right" } }, fmt(tx.amount), " F"))))
+        (() => {
+          const journalFiltre = journal.filter(tx => "all" === journalFilter || ("encaissement" === journalFilter && !tx.isAvoir && !tx.isCredit && !tx.isRefund) || ("avoir" === journalFilter && tx.isAvoir) || ("credit" === journalFilter && tx.isCredit) || ("remboursement" === journalFilter && tx.isRefund));
+          return React.createElement(React.Fragment, null,
+            0 === journalFiltre.length && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Aucune transaction pour ce filtre."),
+            journalFiltre.map((tx, ix) => React.createElement("div", {
+              key: ix, style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid #334155", fontSize: 12 }
+            },
+              React.createElement("span", { style: { color: "#64748b", width: 78, flexShrink: 0 } }, fmtDate(tx.date)),
+              React.createElement("span", { style: { color: "#e2e8f0", flex: 1 } }, tx.client, " — ", tx.room),
+              React.createElement("span", { style: { color: "#94a3b8", width: 90, flexShrink: 0 } }, tx.mode),
+              React.createElement("span", { style: { color: tx.isAvoir ? "#f87171" : tx.isCredit ? "#a78bfa" : tx.isRefund ? "#fb923c" : ("Acompte" === tx.note ? "#38bdf8" : "#4ade80"), width: 70, flexShrink: 0, textAlign: "right" } }, tx.note || "Solde"),
+              React.createElement("span", { style: { color: tx.isAvoir ? "#f87171" : tx.isCredit ? "#a78bfa" : tx.isRefund ? "#fb923c" : "#10b981", fontWeight: 600, width: 90, flexShrink: 0, textAlign: "right" } }, fmt(tx.amount), " F")))
+          );
+        })()
+      )
     )
-  ), !isAdmin && React.createElement("div", {
+  ), isAdmin && React.createElement(CreditClientReport, { hotelData: e, mob: mb, pFrom, pTo, labelPeriode, user: t }), !isAdmin && React.createElement("div", {
     style: {
       background: "#1e293b",
       borderRadius: 12,
@@ -10875,7 +11121,26 @@ function Comptabilite({ hotelData: e, user: t, mob: mb }) {
       color: "#475569",
       marginTop: 2
     }
-  }, resteResas.length, " séjour", resteResas.length !== 1 ? "s" : "")))))
+  }, resteResas.length, " séjour", resteResas.length !== 1 ? "s" : "")), React.createElement("div", {
+    style: {
+      background: "#0f172a",
+      borderRadius: 10,
+      padding: 14,
+      borderLeft: "3px solid #f87171"
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#64748b",
+      marginBottom: 4
+    }
+  }, "💸 Dépenses du jour"), React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: "#f87171"
+    }
+  }, fmt(depensesJour), " F")))))
 }
 
 function Dashboard({
@@ -11141,11 +11406,55 @@ function Dashboard({
   })())));
 }
 
+function GroupSharedDeposit({ hotelData: e, current: m, setCurrent: p }) {
+  const { hotelId: hid, reservations: resas } = e;
+  const [amount, setAmount] = useState(""), [mode, setMode] = useState(""), [date, setDate] = useState(today()), [saving, setSaving] = useState(!1), [msg, setMsg] = useState("");
+  const members = (resas || []).filter(r => r.groupId && r.groupId === m.groupId && "cancelled" !== r.status);
+  const allMembers = members.some(r => r.id === m.id) ? members : [...members, m];
+  const totalGroup = allMembers.reduce((s, r) => s + (r.rate || 0) * daysBetween(r.checkIn, r.checkOut), 0);
+  const repartir = async () => {
+    if (!(+amount > 0)) return setMsg("⚠️ Montant requis.");
+    if (!mode) return setMsg("⚠️ Mode de paiement requis.");
+    setSaving(!0); setMsg("");
+    try {
+      const batch = db.batch();
+      let allocated = 0;
+      allMembers.forEach((r, idx) => {
+        const roomTotal = (r.rate || 0) * daysBetween(r.checkIn, r.checkOut);
+        const isLast = idx === allMembers.length - 1;
+        const share = isLast ? Math.round(+amount) - allocated : Math.round((+amount) * (totalGroup > 0 ? roomTotal / totalGroup : 1 / allMembers.length));
+        allocated += share;
+        if (r.id === m.id) p({ ...m, deposit: share, depositMode: mode, depositDate: date });
+        if (members.some(x => x.id === r.id)) batch.update(db.collection("hotels").doc(hid).collection("reservations").doc(r.id), { deposit: share, depositMode: mode, depositDate: date });
+      });
+      await batch.commit();
+      setMsg("✓ Acompte réparti sur " + allMembers.length + " chambre(s).");
+    } catch (err) {
+      setMsg("Erreur : " + (err.message || "veuillez réessayer."));
+    } finally { setSaving(!1); }
+  };
+  return React.createElement("div", { style: { marginTop: 8, background: "#152238", borderRadius: 8, padding: 10 } },
+    React.createElement("div", { style: { fontSize: 12, color: "#94a3b8", marginBottom: 8 } }, allMembers.length, " chambre(s) dans ce groupe · total séjours : ", fmt(totalGroup), " F"),
+    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8 } },
+      React.createElement("input", { type: "number", value: amount, onChange: e2 => setAmount(e2.target.value), placeholder: "Montant global", style: inputStyle }),
+      React.createElement("select", { value: mode, onChange: e2 => setMode(e2.target.value), style: inputStyle },
+        React.createElement("option", { value: "" }, "Mode"),
+        (e.paymentModes || []).map(pmd => React.createElement("option", { key: pmd.id, value: pmd.name }, pmd.icon, " ", pmd.name))
+      ),
+      React.createElement("input", { type: "date", value: date, onChange: e2 => setDate(e2.target.value), style: inputStyle }),
+      React.createElement("button", { onClick: repartir, disabled: saving, style: { ...btnStyle("#2563eb"), opacity: saving ? .7 : 1 } }, saving ? "…" : "Répartir")
+    ),
+    msg && React.createElement("div", { style: { fontSize: 11, marginTop: 6, color: msg.startsWith("✓") ? "#4ade80" : "#f87171" } }, msg),
+    m.deposit > 0 && React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginTop: 6 } }, "Part de cette chambre : ", React.createElement("b", { style: { color: "#4ade80" } }, fmt(m.deposit), " F"))
+  );
+}
+
 function ReservationModal({
   hotelData: e,
   data: t,
   onClose: a,
-  user: modalUser
+  user: modalUser,
+  mob: mob
 }) {
   const isAdmin = "admin" === modalUser?.role;
   const {
@@ -11170,6 +11479,7 @@ function ReservationModal({
     isVip: t.isVip || !1,
     isGroup: t.isGroup || !1,
     groupId: t.groupId || "",
+    groupPaymentMode: t.groupPaymentMode || "independent",
     alerts: t.alerts || [],
     notes: t.notes || "",
     deposit: t.deposit || 0,
@@ -11211,7 +11521,7 @@ function ReservationModal({
   }, React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "1fr 1fr",
+      gridTemplateColumns: mob ? "1fr" : "1fr 1fr",
       gap: 12
     }
   }, React.createElement("div", {
@@ -11572,7 +11882,21 @@ function ReservationModal({
     }),
     style: inputStyle,
     placeholder: "Ex: GROUPE-MARIAGE-DEC"
-  })), React.createElement("div", {
+  })), m.isGroup && React.createElement("div", {
+    style: { gridColumn: "1/-1" }
+  }, React.createElement("label", { style: labelStyle }, "Mode de règlement du groupe"),
+    React.createElement("select", {
+      value: m.groupPaymentMode,
+      onChange: e => p({ ...m, groupPaymentMode: e.target.value }),
+      style: inputStyle
+    },
+      React.createElement("option", { value: "independent" }, "Chaque chambre indépendante (acompte séparé)"),
+      React.createElement("option", { value: "shared_deposit" }, "Un acompte global réparti entre les chambres"),
+      React.createElement("option", { value: "consolidated" }, "Facture groupée unique pour tout le groupe")
+    ),
+    "shared_deposit" === m.groupPaymentMode && React.createElement(GroupSharedDeposit, { hotelData: e, current: m, setCurrent: p }),
+    "consolidated" === m.groupPaymentMode && React.createElement("div", { style: { fontSize: 12, color: "#94a3b8", marginTop: 8, background: "#0f172a", borderRadius: 8, padding: 10 } }, "ℹ️ Enregistrez d'abord toutes les réservations du groupe avec ce même mode. La facture groupée se génère ensuite depuis l'onglet Factures — elle réunira automatiquement toutes les chambres du groupe.")
+  ), "shared_deposit" !== m.groupPaymentMode && React.createElement("div", {
     style: {
       gridColumn: "1/-1",
       background: "#0f172a",
@@ -11780,7 +12104,8 @@ function ClientModal({
   hotelData: e,
   data: t,
   onClose: a,
-  user: modalUser
+  user: modalUser,
+  mob: mob
 }) {
   const isAdmin = "admin" === modalUser?.role;
   const {
@@ -11807,7 +12132,7 @@ function ClientModal({
   }, React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "1fr 1fr",
+      gridTemplateColumns: mob ? "1fr" : "1fr 1fr",
       gap: 12
     }
   }, React.createElement("div", null, React.createElement("label", {
@@ -12032,7 +12357,8 @@ function InvoiceModal({
   hotelData: e,
   data: t,
   onClose: a,
-  user: modalUser
+  user: modalUser,
+  mob: mob
 }) {
   const isAdmin = "admin" === modalUser?.role,
     invoiceTitle = "Proforma — Facturation & Encaissement";
@@ -12041,7 +12367,31 @@ function InvoiceModal({
     reservations: l,
     clients: o,
     rooms: r
-  } = e, i = t.id ? t : (findRealInvoiceByResa(e.invoices, t.reservationId) || null), c = l.find(e => e.id === (i?.reservationId || t.reservationId)), s = c ? o.find(e => e.id === c.clientId) : null, d = c ? r.find(e => e.id === c.roomId) : null, m = c ? daysBetween(c.checkIn, c.checkOut) : 0, [p, u] = useState(!1), [av, setAv] = useState(!1), [y, f] = useState(i || {
+  } = e;
+  const groupIdParam = t.groupId || null;
+  const i = t.id ? t : (groupIdParam ? (findGroupInvoice(e.invoices, groupIdParam) || null) : (findRealInvoiceByResa(e.invoices, t.reservationId) || null));
+  const isGroupMode = !!(groupIdParam || i?.groupId);
+  const effectiveGroupId = groupIdParam || i?.groupId || null;
+  const groupMembers = isGroupMode ? l.filter(r2 => r2.groupId === effectiveGroupId && "cancelled" !== r2.status) : [];
+  const groupLabel = isGroupMode ? (groupMembers.map(gm => { const cl = o.find(x => x.id === gm.clientId); return cl ? `${cl.lastName} ${cl.firstName}` : gm.clientName || ""; }).filter(Boolean).join(", ") || "Groupe") : "";
+  const c = isGroupMode ? null : l.find(e2 => e2.id === (i?.reservationId || t.reservationId)), s = c ? o.find(e2 => e2.id === c.clientId) : null, d = c ? r.find(e2 => e2.id === c.roomId) : null, m = c ? daysBetween(c.checkIn, c.checkOut) : 0, [p, u] = useState(!1), [av, setAv] = useState(!1), [y, f] = useState(i || (isGroupMode ? {
+    id: uid(),
+    groupId: effectiveGroupId,
+    reservationId: null,
+    date: today(),
+    locked: !1,
+    clientName: groupLabel,
+    lines: groupMembers.map(gm => {
+      const room = r.find(rm2 => rm2.id === gm.roomId), nights = daysBetween(gm.checkIn, gm.checkOut);
+      return { desc: `Hébergement — ${room?.name || "Chambre"} — ${nights} nuit${1 !== nights ? "s" : ""} × ${fmt(gm.rate || 0)} F`, amount: (gm.rate || 0) * nights, category: "hebergement" };
+    }),
+    paid: groupMembers.reduce((s2, gm) => s2 + (gm.deposit || 0), 0),
+    payments: (() => {
+      const totalDep = groupMembers.reduce((s2, gm) => s2 + (gm.deposit || 0), 0);
+      return totalDep > 0 ? [{ amount: totalDep, mode: groupMembers.find(gm => gm.deposit > 0)?.depositMode || "", date: today(), note: "Acompte" }] : [];
+    })(),
+    notes: ""
+  } : {
     id: uid(),
     reservationId: c?.id,
     date: today(),
@@ -12059,7 +12409,7 @@ function InvoiceModal({
       note: "Acompte"
     }] : [],
     notes: ""
-  }), [g, b] = useState({
+  })), [g, b] = useState({
     desc: "",
     qty: 1,
     pu: 0,
@@ -12077,15 +12427,24 @@ function InvoiceModal({
     };
     u(!0);
     try {
-      return await (t = e.id, db.collection("hotels").doc(n).collection("invoices").doc(t)).set(e), c && await (e => db.collection("hotels").doc(n).collection("reservations").doc(e))(c.id).update({
-        status: E > 0 && v >= E ? "paid" : "invoiced"
-      }), e
+      await db.collection("hotels").doc(n).collection("invoices").doc(e.id).set(e);
+      if (isGroupMode) {
+        const batch = db.batch();
+        groupMembers.forEach(gm => batch.update(db.collection("hotels").doc(n).collection("reservations").doc(gm.id), { status: E > 0 && v >= E ? "paid" : "invoiced" }));
+        await batch.commit();
+      } else if (c) {
+        await db.collection("hotels").doc(n).collection("reservations").doc(c.id).update({ status: E > 0 && v >= E ? "paid" : "invoiced" });
+      }
+      return e;
     } finally {
       u(!1)
     }
-    var t
   };
   const myAvoirs = avoirsForInvoice(e.invoices, y.id), avoirsSum = myAvoirs.reduce((s2, av2) => s2 + (av2.total || 0), 0), Eeff = E + avoirsSum, Seff = Eeff - v, tropPercu = v > Eeff ? v - Eeff : 0;
+  const clientKey = s ? "id:" + s.id : "name:" + ((c?.clientName || t?.clientName || "").trim().toLowerCase());
+  const allClientCredits = computeClientCredits(e.invoices, l, o, r);
+  const alreadyUsedHere = (y.payments || []).filter(p => "Crédit client" === p.mode).reduce((s2, p) => s2 + (p.amount || 0), 0);
+  const clientCreditDispo = isGroupMode ? 0 : (("name:" === clientKey ? 0 : (allClientCredits[clientKey]?.credit || 0)) + alreadyUsedHere);
   return React.createElement(React.Fragment, null, React.createElement(Modal, {
     title: invoiceTitle,
     onClose: a,
@@ -12097,7 +12456,8 @@ function InvoiceModal({
       marginBottom: 16,
       background: "#0f172a",
       borderRadius: 8,
-      padding: 12
+      padding: 12,
+      flexWrap: "wrap"
     }
   }, React.createElement("div", {
     style: {
@@ -12128,7 +12488,7 @@ function InvoiceModal({
       fontSize: 14,
       color: "#f1f5f9"
     }
-  }, d?.name || (y.standalone ? "🍽️ Restaurant" : "—"))), React.createElement("div", null, React.createElement("div", {
+  }, d?.name || (y.groupId ? `👥 ${groupMembers.length || (y.lines || []).length} chambre(s)` : (y.standalone ? "🍽️ Restaurant" : "—")))), React.createElement("div", null, React.createElement("div", {
     style: {
       fontSize: 11,
       color: "#64748b"
@@ -12138,7 +12498,7 @@ function InvoiceModal({
       fontSize: 13,
       color: "#94a3b8"
     }
-  }, c ? React.createElement(React.Fragment, null, fmtDate(c?.checkIn), " → ", fmtDate(c?.checkOut)) : "Facture indépendante"))), React.createElement("div", {
+  }, c ? React.createElement(React.Fragment, null, fmtDate(c?.checkIn), " → ", fmtDate(c?.checkOut)) : (y.groupId ? "Facture groupée" : "Facture indépendante")))), React.createElement("div", {
     style: {
       marginBottom: 16
     }
@@ -12191,7 +12551,7 @@ function InvoiceModal({
   }), !y.locked && React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "1.6fr 60px 90px 100px auto",
+      gridTemplateColumns: mob ? "1fr 1fr" : "1.6fr 60px 90px 100px auto",
       gap: 8,
       marginTop: 8
     }
@@ -12324,7 +12684,7 @@ function InvoiceModal({
   }, "✕"))), React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "1fr 1fr 80px 80px auto",
+      gridTemplateColumns: mob ? "1fr 1fr" : "1fr 1fr 80px 80px auto",
       gap: 8,
       marginTop: 8
     }
@@ -12340,7 +12700,9 @@ function InvoiceModal({
   }, "Mode de paiement"), e.paymentModes.map(e => React.createElement("option", {
     key: e.id,
     value: e.name
-  }, e.icon, " ", e.name))), React.createElement("input", {
+  }, e.icon, " ", e.name)), clientCreditDispo > 0 && React.createElement("option", {
+    value: "Crédit client"
+  }, "💳 Crédit client (", fmt(clientCreditDispo), " F dispo)")), React.createElement("input", {
     value: R.note,
     onChange: e => h({
       ...R,
@@ -12368,6 +12730,7 @@ function InvoiceModal({
   }), React.createElement("button", {
     onClick: () => {
       if (!R.amount || !R.mode) return alert("Montant et mode requis");
+      if ("Crédit client" === R.mode && +R.amount > clientCreditDispo) return alert("Ce client n'a que " + fmt(clientCreditDispo) + " F de crédit disponible.");
       const e = [...y.payments, {
         ...R,
         amount: +R.amount
@@ -12640,6 +13003,38 @@ function printAvoir(av, invoice, resa, client, room, hotelData) {
   w.document.close();
 }
 
+function printRapportComptable(l, labelPeriode, caFacture, encaissePeriode, totalDepensesPeriode, resultatNet, parCategorieDepenses, parMode, parCategorie, journal, credits) {
+  const s = window.open("", "_blank");
+  const catLabels = { hebergement: "Hébergement", restaurant: "Restaurant", navette: "Navette", autre: "Autres" };
+  const rows = (obj, labelFn) => Object.entries(obj).map(([k, v]) => `<tr><td>${labelFn ? labelFn(k) : k}</td><td style="text-align:right">${fmt(v)} F CFA</td></tr>`).join("");
+  const journalRows = journal.map(tx => `<tr><td>${fmtDate(tx.date)}</td><td>${tx.client} — ${tx.room}</td><td>${tx.mode}</td><td>${tx.note || "Solde"}</td><td style="text-align:right">${fmt(tx.amount)} F CFA</td></tr>`).join("");
+  const creditRows = (credits || []).filter(c => c.credit > .01).map(c => `<tr><td>${c.label}</td><td style="text-align:right">${fmt(c.credit)} F CFA</td></tr>`).join("");
+  s.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Rapport comptable</title>
+  <style>body{font-family:Arial,sans-serif;max-width:850px;margin:40px auto;color:#333}
+  h1{color:#1e3a5f}h2{color:#1e3a5f;font-size:16px;margin-top:28px;border-bottom:2px solid #eee;padding-bottom:6px}
+  .header{display:flex;justify-content:space-between;margin-bottom:20px}
+  table{width:100%;border-collapse:collapse;margin:12px 0}th,td{padding:8px 10px;border:1px solid #ddd;text-align:left;font-size:13px}
+  th{background:#f5f5f5}.stats{display:flex;gap:16px;flex-wrap:wrap;margin:16px 0}
+  .stat{flex:1;min-width:160px;background:#f9f9f9;border-radius:8px;padding:12px}
+  .stat .lbl{font-size:11px;color:#777}.stat .val{font-size:20px;font-weight:bold}
+  @media print{button{display:none}}</style></head><body>
+  <div class="header"><div>${l.logoUrl ? `<img src="${l.logoUrl}" style="height:50px;margin-bottom:8px"><h1>${l.hotelName}</h1>` : `<h1>🏨 ${l.hotelName}</h1>`}<p>Rapport comptable</p></div>
+  <div style="text-align:right"><p><strong>Période :</strong> ${labelPeriode}</p><p>Généré le ${fmtDate(today())}</p></div></div>
+  <div class="stats">
+  <div class="stat"><div class="lbl">CA facturé</div><div class="val" style="color:#7c3aed">${fmt(caFacture)} F</div></div>
+  <div class="stat"><div class="lbl">CA encaissé</div><div class="val" style="color:#b45309">${fmt(encaissePeriode)} F</div></div>
+  <div class="stat"><div class="lbl">Dépenses</div><div class="val" style="color:#dc2626">${fmt(totalDepensesPeriode)} F</div></div>
+  <div class="stat"><div class="lbl">Résultat net</div><div class="val" style="color:${resultatNet >= 0 ? "#16a34a" : "#dc2626"}">${resultatNet >= 0 ? "+" : ""}${fmt(resultatNet)} F</div></div>
+  </div>
+  <h2>Répartition par catégorie (CA facturé)</h2><table><tr><th>Catégorie</th><th style="text-align:right">Montant</th></tr>${rows(parCategorie, k => catLabels[k] || k)}</table>
+  <h2>Répartition des dépenses par catégorie</h2>${0 === Object.keys(parCategorieDepenses).length ? "<p>Aucune dépense sur cette période.</p>" : `<table><tr><th>Catégorie</th><th style="text-align:right">Montant</th></tr>${rows(parCategorieDepenses)}</table>`}
+  <h2>Répartition par mode de paiement</h2><table><tr><th>Mode</th><th style="text-align:right">Montant</th></tr>${rows(parMode)}</table>
+  <h2>Crédit client</h2>${creditRows ? `<table><tr><th>Client</th><th style="text-align:right">Crédit dû</th></tr>${creditRows}</table>` : "<p>Aucun client avec un solde de crédit.</p>"}
+  <h2>Journal des transactions (${journal.length})</h2>${journal.length ? `<table><tr><th>Date</th><th>Client — Chambre</th><th>Mode</th><th>Type</th><th style="text-align:right">Montant</th></tr>${journalRows}</table>` : "<p>Aucune transaction sur cette période.</p>"}
+  <button onclick="window.print()" style="margin-top:20px;padding:10px 24px;background:#1e3a5f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:15px">🖨️ Imprimer</button>
+  </body></html>`), s.document.close();
+}
+
 function printInvoice(e, t, a, n, l, isAdmin = true) {
   const o = e.total || e.lines?.reduce((e, t) => e + (t.amount || 0), 0) || 0,
     r = e.paid || 0,
@@ -12879,6 +13274,117 @@ function UsersSettings({
 }
 
 
+function HotelDetailPanel({ hotelId, hotelName, onClose, onUpdated }) {
+  const [loading, setLoading] = useState(!0);
+  const [hotel, setHotel] = useState(null);
+  const [counts, setCounts] = useState({ rooms: 0, reservations: 0, invoices: 0 });
+  const [profiles, setProfiles] = useState([]);
+  const [notes, setNotes] = useState("");
+  const [notesSaving, setNotesSaving] = useState(!1);
+  const [msg, setMsg] = useState("");
+  const ref = db.collection("hotels").doc(hotelId);
+
+  const load = useCallback(async () => {
+    setLoading(!0);
+    try {
+      const [hDoc, roomsSnap, resaSnap, invSnap, profSnap] = await Promise.all([
+        ref.get(), ref.collection("rooms").get(), ref.collection("reservations").get(),
+        ref.collection("invoices").get(), db.collection("userProfiles").where("hotelId", "==", hotelId).get()
+      ]);
+      const h = hDoc.exists ? { id: hDoc.id, ...hDoc.data() } : null;
+      setHotel(h);
+      setNotes(h?.commercialNotes || "");
+      setCounts({ rooms: roomsSnap.size, reservations: resaSnap.size, invoices: invSnap.size });
+      setProfiles(profSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (err) {
+      setMsg("Erreur de chargement : " + (err.message || ""));
+    } finally { setLoading(!1); }
+  }, [hotelId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setTier = async tier => {
+    await ref.update({ tier });
+    setHotel(h2 => ({ ...h2, tier }));
+    onUpdated && onUpdated();
+  };
+
+  const toggleDisabled = async () => {
+    const next = !hotel?.disabled;
+    if (next && !window.confirm(`Suspendre l'accès de ${hotel?.hotelName} ? Ses utilisateurs ne pourront plus se connecter.`)) return;
+    await ref.update({ disabled: next });
+    setHotel(h2 => ({ ...h2, disabled: next }));
+    onUpdated && onUpdated();
+  };
+
+  const saveNotes = async () => {
+    setNotesSaving(!0);
+    try { await ref.update({ commercialNotes: notes }); } finally { setNotesSaving(!1); }
+  };
+
+  const resetPassword = async login => {
+    if (!login) return setMsg("⚠️ Aucun email connu pour ce compte.");
+    try { await auth.sendPasswordResetEmail(login); setMsg("✓ Email de réinitialisation envoyé à " + login); }
+    catch (err) { setMsg("Erreur : " + (err.message || "")); }
+  };
+
+  const toggleProfileDisabled = async pf => {
+    const next = !pf.disabled;
+    if (next && !window.confirm(`Désactiver le compte de ${pf.name} ?`)) return;
+    await db.collection("userProfiles").doc(pf.id).update({ disabled: next });
+    setProfiles(list => list.map(x => x.id === pf.id ? { ...x, disabled: next } : x));
+  };
+
+  if (loading) return React.createElement(Modal, { title: hotelName, onClose, width: 640 }, React.createElement("div", { style: { color: "#64748b", padding: 30, textAlign: "center" } }, "Chargement…"));
+
+  return React.createElement(Modal, { title: hotel?.hotelName || hotelName, onClose, width: 680 },
+    msg && React.createElement("div", { style: { fontSize: 12, marginBottom: 12, color: msg.startsWith("✓") ? "#4ade80" : "#f87171" } }, msg),
+    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 16 } },
+      React.createElement("div", { style: { background: "#0f172a", borderRadius: 8, padding: 12, textAlign: "center" } }, React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: "#e2e8f0" } }, counts.rooms), React.createElement("div", { style: { fontSize: 11, color: "#64748b" } }, "Chambres")),
+      React.createElement("div", { style: { background: "#0f172a", borderRadius: 8, padding: 12, textAlign: "center" } }, React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: "#e2e8f0" } }, counts.reservations), React.createElement("div", { style: { fontSize: 11, color: "#64748b" } }, "Réservations")),
+      React.createElement("div", { style: { background: "#0f172a", borderRadius: 8, padding: 12, textAlign: "center" } }, React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: "#e2e8f0" } }, counts.invoices), React.createElement("div", { style: { fontSize: 11, color: "#64748b" } }, "Factures"))
+    ),
+    React.createElement("div", { style: { fontSize: 12, color: "#64748b", marginBottom: 16 } }, "Créé le ", hotel?.createdAt?.toDate ? fmtDate(hotel.createdAt.toDate().toISOString()) : "—", " · ID : ", hotelId),
+    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 } },
+      React.createElement("div", null,
+        React.createElement("label", { style: labelStyle }, "Formule tarifaire"),
+        React.createElement("select", { value: hotel?.tier || "", onChange: e2 => setTier(e2.target.value), style: inputStyle },
+          React.createElement("option", { value: "" }, "— Non définie —"),
+          React.createElement("option", { value: "starter" }, "Starter"),
+          React.createElement("option", { value: "standard" }, "Standard"),
+          React.createElement("option", { value: "pro" }, "Pro"),
+          React.createElement("option", { value: "devis" }, "Sur devis")
+        )
+      ),
+      React.createElement("div", null,
+        React.createElement("label", { style: labelStyle }, "Statut d'accès"),
+        React.createElement("button", { onClick: toggleDisabled, style: { ...btnStyle(hotel?.disabled ? "#10b981" : "#dc2626"), width: "100%" } }, hotel?.disabled ? "🔓 Réactiver l'accès" : "🔒 Suspendre l'accès")
+      )
+    ),
+    React.createElement("div", { style: { marginBottom: 16 } },
+      React.createElement("label", { style: labelStyle }, "Notes commerciales (privées)"),
+      React.createElement("textarea", { value: notes, onChange: e2 => setNotes(e2.target.value), onBlur: saveNotes, rows: 3, style: { ...inputStyle, resize: "vertical" }, placeholder: "Ex: en essai depuis le 3 sept, relancer pour renouvellement…" }),
+      notesSaving && React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginTop: 4 } }, "Enregistrement…")
+    ),
+    React.createElement("div", null,
+      React.createElement("div", { style: { fontSize: 13, color: "#94a3b8", fontWeight: 600, marginBottom: 8 } }, "Comptes (", profiles.length, ")"),
+      0 === profiles.length && React.createElement("div", { style: { color: "#475569", fontSize: 12 } }, "Aucun compte trouvé."),
+      profiles.map(pf => React.createElement("div", {
+        key: pf.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "#0f172a", borderRadius: 8, marginBottom: 6, flexWrap: "wrap", gap: 8 }
+      },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: 13, color: "#e2e8f0" } }, pf.name, " ", pf.disabled && React.createElement("span", { style: { fontSize: 10, color: "#f87171", border: "1px solid #f87171", borderRadius: 4, padding: "1px 5px", marginLeft: 4 } }, "désactivé")),
+          React.createElement("div", { style: { fontSize: 11, color: "#64748b" } }, pf.login, " · ", pf.role, pf.lastLogin?.toDate ? ` · dernière connexion ${fmtDate(pf.lastLogin.toDate().toISOString())}` : " · jamais connecté")
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 6 } },
+          React.createElement("button", { onClick: () => resetPassword(pf.login), style: { ...btnStyle("#334155"), padding: "4px 8px", fontSize: 11 } }, "Réinit. mot de passe"),
+          React.createElement("button", { onClick: () => toggleProfileDisabled(pf), style: { ...btnStyle(pf.disabled ? "#10b981" : "#dc2626"), padding: "4px 8px", fontSize: 11 } }, pf.disabled ? "Réactiver" : "Désactiver")
+        )
+      ))
+    )
+  );
+}
+
 function PlatformView({
   user: e,
   hotelData: t
@@ -12893,7 +13399,8 @@ function PlatformView({
       password: ""
     }),
     [p, u] = useState(false),
-    [y, f] = useState(false);
+    [y, f] = useState(false),
+    [selectedHotel, setSelectedHotel] = useState(null);
 
   const g = useCallback(async () => {
     o(true);
@@ -13005,7 +13512,8 @@ function PlatformView({
         const isMine = h.id === t.hotelId;
         return React.createElement("div", {
           key: h.id,
-          style: {background: "#1e293b", borderRadius: 12, padding: 16, border: isMine ? "1px solid #2563eb" : "1px solid #334155"}
+          onClick: () => setSelectedHotel(h),
+          style: {background: "#1e293b", borderRadius: 12, padding: 16, border: isMine ? "1px solid #2563eb" : "1px solid #334155", cursor: "pointer"}
         },
           React.createElement("div", {
             style: {fontSize: 15, fontWeight: 700, color: "#f1f5f9", marginBottom: 4}
@@ -13013,12 +13521,22 @@ function PlatformView({
             h.hotelName,
             isMine && React.createElement("span", {
               style: {marginLeft: 8, fontSize: 10, background: "#1d4ed8", color: "#fff", padding: "2px 6px", borderRadius: 4}
-            }, "MON HOTEL")
+            }, "MON HOTEL"),
+            h.disabled && React.createElement("span", {
+              style: {marginLeft: 8, fontSize: 10, background: "#7f1d1d", color: "#fff", padding: "2px 6px", borderRadius: 4}
+            }, "SUSPENDU")
           ),
-          React.createElement("div", {style: {fontSize: 11, color: "#64748b"}}, h.id)
+          React.createElement("div", {style: {fontSize: 11, color: "#64748b"}}, h.id),
+          h.tier && React.createElement("div", {style: {fontSize: 10, color: "#94a3b8", marginTop: 6, textTransform: "uppercase"}}, h.tier)
         );
       })
     ),
+    selectedHotel && React.createElement(HotelDetailPanel, {
+      hotelId: selectedHotel.id,
+      hotelName: selectedHotel.hotelName,
+      onClose: () => setSelectedHotel(null),
+      onUpdated: g
+    }),
     !l && a.length === 0 && React.createElement("div", {
       style: {color: "#475569", padding: 40, textAlign: "center"}
     }, "Aucun hotel trouve. Verifiez les regles Firestore pour platformAdmin."),
@@ -13260,8 +13778,145 @@ function AuthScreen() {
   }, "Vous serez automatiquement Administrateur de ce nouvel hôtel. Vous pourrez ensuite créer des comptes Réceptionniste depuis Paramètres.")))
 }
 
+function Depenses({ hotelData: e, user: t }) {
+  const { id: hid, expenses: exps, expenseCategories: cats, paymentModes: pms } = e;
+  const jr = today(), isAdmin = "admin" === t.role || "platformAdmin" === t.role;
+  const [editId, setEditId] = useState(null);
+  const [date, setDate] = useState(jr), [cat, setCat] = useState(""), [desc, setDesc] = useState(""), [montant, setMontant] = useState(""), [mode, setMode] = useState(""), [note, setNote] = useState(""), [saving, setSaving] = useState(!1), [msg, setMsg] = useState(""), [filterMonth, setFilterMonth] = useState(jr.slice(0, 7)), [search, setSearch] = useState(""), [filterCat, setFilterCat] = useState("");
+  const ref = db.collection("hotels").doc(hid).collection("expenses");
+  const sorted = [...(exps || [])].sort((a, b) => b.date.localeCompare(a.date));
+  const filtered = sorted.filter(x => x.date.slice(0, 7) === filterMonth
+    && (!filterCat || (x.category || "") === filterCat)
+    && (!search.trim() || (x.description || "").toLowerCase().includes(search.trim().toLowerCase()) || (x.note || "").toLowerCase().includes(search.trim().toLowerCase())));
+  const totalMonth = filtered.reduce((s, x) => s + (x.montant || 0), 0);
+  const parCatMonth = {};
+  filtered.forEach(x => { const c2 = x.category || "Sans catégorie"; parCatMonth[c2] = (parCatMonth[c2] || 0) + (x.montant || 0); });
+  const totalToday = (exps || []).filter(x => x.date === jr).reduce((s, x) => s + (x.montant || 0), 0);
+  const reset = () => { setEditId(null); setDate(jr); setCat(""); setDesc(""); setMontant(""); setMode(""); setNote(""); };
+  const commencerEdition = x => {
+    setEditId(x.id); setDate(x.date); setCat(x.category || ""); setDesc(x.description || "");
+    setMontant(String(x.montant || "")); setMode(x.mode || ""); setNote(x.note || ""); setMsg("");
+  };
+  const enregistrer = async () => {
+    if (!desc.trim() || !(+montant > 0)) return setMsg("⚠️ Description et montant (> 0) requis.");
+    setSaving(!0); setMsg("");
+    try {
+      const id = editId || uid();
+      const payload = {
+        id, date, category: cat || "", description: desc.trim(), montant: +montant,
+        mode: mode || "", note: note.trim()
+      };
+      if (editId) {
+        await ref.doc(id).update(payload);
+        setMsg("✓ Dépense modifiée.");
+      } else {
+        await ref.doc(id).set({ ...payload, createdBy: t.name || t.login || "", createdAt: new Date().toISOString() });
+        setMsg("✓ Dépense enregistrée.");
+      }
+      reset();
+    } catch (e) {
+      setMsg("Erreur : " + (e.message || "veuillez réessayer."));
+    } finally { setSaving(!1); }
+  };
+  const supprimer = async id => {
+    if (!window.confirm("Supprimer cette dépense ?")) return;
+    await ref.doc(id).delete();
+    editId === id && reset();
+  };
+  return React.createElement("div", { style: { display: "grid", gridTemplateColumns: "360px 1fr", gap: 16 } },
+    React.createElement("div", { style: { background: "#1e293b", borderRadius: 12, padding: 16, alignSelf: "start" } },
+      React.createElement("h3", { style: { margin: "0 0 12px", fontSize: 14, color: "#94a3b8" } }, editId ? "Modifier la dépense" : "Nouvelle dépense"),
+      React.createElement("label", { style: labelStyle }, "Date"),
+      React.createElement("input", { type: "date", value: date, onChange: e => setDate(e.target.value), style: inputStyle }),
+      React.createElement("label", { style: labelStyle }, "Catégorie"),
+      React.createElement("select", { value: cat, onChange: e => setCat(e.target.value), style: inputStyle },
+        React.createElement("option", { value: "" }, "— Aucune —"),
+        (cats || []).map(c => React.createElement("option", { key: c.id, value: c.name }, c.name))
+      ),
+      0 === (cats || []).length && React.createElement("div", { style: { fontSize: 11, color: "#64748b", margin: "-6px 0 10px" } }, "Aucune catégorie configurée (Paramètres > Dépenses)."),
+      React.createElement("label", { style: labelStyle }, "Description"),
+      React.createElement("input", { value: desc, onChange: e => setDesc(e.target.value), placeholder: "Ex: Achat savon et papier toilette", style: inputStyle }),
+      React.createElement("label", { style: labelStyle }, "Montant (F CFA)"),
+      React.createElement("input", { type: "number", value: montant, onChange: e => setMontant(e.target.value), placeholder: "0", style: inputStyle }),
+      React.createElement("label", { style: labelStyle }, "Mode de paiement"),
+      React.createElement("select", { value: mode, onChange: e => setMode(e.target.value), style: inputStyle },
+        React.createElement("option", { value: "" }, "— Non précisé —"),
+        (pms || []).map(p => React.createElement("option", { key: p.id, value: p.name }, p.icon, " ", p.name))
+      ),
+      React.createElement("label", { style: labelStyle }, "Note (facultatif)"),
+      React.createElement("input", { value: note, onChange: e => setNote(e.target.value), placeholder: "Fournisseur, référence…", style: inputStyle }),
+      msg && React.createElement("div", { style: { fontSize: 12, color: msg.startsWith("✓") ? "#4ade80" : "#f87171", margin: "8px 0" } }, msg),
+      React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8 } },
+        React.createElement("button", { onClick: enregistrer, disabled: saving, style: { ...btnStyle("#2563eb"), flex: 1, opacity: saving ? .7 : 1 } }, saving ? "Enregistrement…" : (editId ? "Enregistrer les modifications" : "+ Ajouter la dépense")),
+        editId && React.createElement("button", { onClick: reset, style: { ...btnStyle("#475569") } }, "Annuler")
+      )
+    ),
+    React.createElement("div", { style: { background: "#1e293b", borderRadius: 12, padding: 16 } },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 } },
+        React.createElement("h3", { style: { margin: 0, fontSize: 14, color: "#94a3b8" } }, "Historique"),
+        React.createElement("div", { style: { display: "flex", gap: 14, alignItems: "center", fontSize: 12 } },
+          React.createElement("span", { style: { color: "#94a3b8" } }, "Aujourd'hui : ", React.createElement("b", { style: { color: "#f87171" } }, fmt(totalToday), " F")),
+          React.createElement("input", { type: "month", value: filterMonth, onChange: e => setFilterMonth(e.target.value), style: { ...inputStyle, width: 150, padding: "6px 10px" } })
+        )
+      ),
+      React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" } },
+        React.createElement("input", { value: search, onChange: e => setSearch(e.target.value), placeholder: "🔎 Rechercher (description, note)…", style: { ...inputStyle, flex: 1, minWidth: 180 } }),
+        React.createElement("select", { value: filterCat, onChange: e => setFilterCat(e.target.value), style: { ...inputStyle, width: 180 } },
+          React.createElement("option", { value: "" }, "Toutes catégories"),
+          (cats || []).map(c => React.createElement("option", { key: c.id, value: c.name }, c.name))
+        )
+      ),
+      Object.keys(parCatMonth).length > 1 && React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 } },
+        Object.entries(parCatMonth).map(([c2, m2]) => React.createElement("span", {
+          key: c2, style: { fontSize: 11, color: "#94a3b8", background: "#0f172a", borderRadius: 6, padding: "4px 8px" }
+        }, c2, " : ", React.createElement("b", { style: { color: "#f87171" } }, fmt(m2), " F")))
+      ),
+      React.createElement("div", { style: { fontSize: 13, color: "#94a3b8", marginBottom: 12 } }, "Total du mois : ", React.createElement("b", { style: { color: "#f87171" } }, fmt(totalMonth), " F"), " — ", filtered.length, " dépense", 1 !== filtered.length ? "s" : ""),
+      0 === filtered.length && React.createElement("div", { style: { color: "#475569", fontSize: 13 } }, "Aucune dépense ne correspond à ces filtres."),
+      filtered.map(x => React.createElement("div", {
+        key: x.id,
+        style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: editId === x.id ? "#1e3a5f" : "#0f172a", borderRadius: 8, marginBottom: 6 }
+      },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: 13, color: "#e2e8f0" } }, x.description),
+          React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginTop: 2 } }, fmtDate(x.date), x.category ? ` · ${x.category}` : "", x.mode ? ` · ${x.mode}` : "", x.note ? ` · ${x.note}` : "")
+        ),
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
+          React.createElement("span", { style: { fontSize: 14, color: "#f87171", fontWeight: 600 } }, "- ", fmt(x.montant), " F"),
+          isAdmin && React.createElement("button", { onClick: () => commencerEdition(x), style: { background: "none", border: "none", color: "#64748b", cursor: "pointer", fontSize: 14 } }, "✎"),
+          isAdmin && React.createElement("button", { onClick: () => supprimer(x.id), style: { background: "none", border: "none", color: "#64748b", cursor: "pointer", fontSize: 15 } }, "✕")
+        )
+      ))
+    )
+  );
+}
+
+function ExpenseCategoriesSettings({ hotelId: e, expenseCategories: t }) {
+  const [a, n] = useState(""), l = db.collection("hotels").doc(e), o = async () => {
+    a.trim() && (await l.update({ expenseCategories: [...(t || []), { id: uid(), name: a.trim() }] }), n(""));
+  };
+  return React.createElement("div", { style: { maxWidth: 400 } },
+    React.createElement("h3", { style: { color: "#94a3b8", fontSize: 14, marginBottom: 12 } }, "Catégories de dépenses"),
+    (t || []).map(c => React.createElement("div", {
+      key: c.id,
+      style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#0f172a", borderRadius: 8, marginBottom: 6 }
+    },
+      React.createElement("span", { style: { color: "#e2e8f0" } }, c.name),
+      React.createElement("button", {
+        onClick: () => (async () => { await l.update({ expenseCategories: (t || []).filter(x => x.id !== c.id) }) })(),
+        style: { background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 16 }
+      }, "✕")
+    )),
+    0 === (t || []).length && React.createElement("div", { style: { color: "#475569", fontSize: 13, marginBottom: 8 } }, "Aucune catégorie. Ajoutez-en une ci-dessous."),
+    React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12 } },
+      React.createElement("input", { value: a, onChange: e => n(e.target.value), placeholder: "Ex: Fournitures", style: { ...inputStyle, flex: 1 }, onKeyDown: e => "Enter" === e.key && o() }),
+      React.createElement("button", { onClick: o, style: btnStyle("#2563eb") }, "+ Ajouter")
+    )
+  );
+}
+
 function App() {
-  const [e, t] = useState(!1), [a, n] = useState(null), [l, o] = useState(null), [r, i] = useState(""), [c, s] = useState(null), [d, m] = useState([]), [p, u] = useState([]), [y, f] = useState([]), [g, b] = useState([]), [R, h] = useState([]), [E, v] = useState(!0), [S, x] = useState("planning"), [k, C] = useState(null), [I, z] = useState(!1), [mob, setMob] = useState(window.innerWidth <= 820), [mobMenu, setMobMenu] = useState(!1);
+  const [e, t] = useState(!1), [a, n] = useState(null), [l, o] = useState(null), [r, i] = useState(""), [c, s] = useState(null), [d, m] = useState([]), [p, u] = useState([]), [y, f] = useState([]), [g, b] = useState([]), [R, h] = useState([]), [Exp, setExp] = useState([]), [E, v] = useState(!0), [S, x] = useState("planning"), [k, C] = useState(null), [I, z] = useState(!1), [mob, setMob] = useState(window.innerWidth <= 820), [mobMenu, setMobMenu] = useState(!1), [suspended, setSuspended] = useState(!1);
   useEffect(() => {
     const onResize = () => setMob(window.innerWidth <= 820);
     window.addEventListener("resize", onResize);
@@ -13273,7 +13928,7 @@ function App() {
           let t = await fetchUserProfile(e.uid),
             a = 0;
           for (; !t && a < 5;) await new Promise(e => setTimeout(e, 300)), t = await fetchUserProfile(e.uid), a += 1;
-          t ? o(t) : (await signOutUser(), i("Profil introuvable pour ce compte. Veuillez contacter votre administrateur."), o(null))
+          t ? (t.disabled ? (await signOutUser(), i("Ce compte a été désactivé. Contactez votre administrateur."), o(null)) : o(t)) : (await signOutUser(), i("Profil introuvable pour ce compte. Veuillez contacter votre administrateur."), o(null))
         } catch (e) {
           i("Impossible de charger votre profil. Vérifiez votre connexion internet."), o(null)
         } else o(null);
@@ -13281,13 +13936,13 @@ function App() {
       });
       return () => e()
     }, []), useEffect(() => {
-      if (!l?.hotelId) return s(null), m([]), u([]), f([]), b([]), h([]), void v(!0);
-      v(!0);
+      if (!l?.hotelId) return s(null), m([]), u([]), f([]), b([]), h([]), setExp([]), void v(!0);
+      v(!0); setSuspended(!1);
       const e = db.collection("hotels").doc(l.hotelId),
         t = [e.onSnapshot(e => s(e.exists ? {
           id: e.id,
           ...e.data()
-        } : null)), e.collection("rooms").onSnapshot(e => m(e.docs.map(e => e.data()))), e.collection("clients").onSnapshot(e => u(e.docs.map(e => e.data()))), e.collection("reservations").onSnapshot(e => f(e.docs.map(e => e.data()))), e.collection("invoices").onSnapshot(e => b(e.docs.map(e => e.data()))), e.collection("maintenanceBlocks").onSnapshot(e => h(e.docs.map(e => e.data())))];
+        } : null), () => { setSuspended(!0); v(!1); }), e.collection("rooms").onSnapshot(e => m(e.docs.map(e => e.data()))), e.collection("clients").onSnapshot(e => u(e.docs.map(e => e.data()))), e.collection("reservations").onSnapshot(e => f(e.docs.map(e => e.data()))), e.collection("invoices").onSnapshot(e => b(e.docs.map(e => e.data()))), e.collection("maintenanceBlocks").onSnapshot(e => h(e.docs.map(e => e.data()))), e.collection("expenses").onSnapshot(e => setExp(e.docs.map(e => e.data())))];
       return v(!1), () => t.forEach(e => e())
     }, [l?.hotelId]), !e) return React.createElement("div", {
     style: {
@@ -13329,6 +13984,23 @@ function App() {
       boxShadow: "0 10px 30px rgba(0,0,0,0.4)"
     }
   }, r));
+  if (suspended) return React.createElement("div", {
+    style: {
+      minHeight: "100vh",
+      background: "#0f172a",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      color: "#94a3b8",
+      fontFamily: "'Segoe UI', sans-serif",
+      textAlign: "center",
+      padding: 20
+    }
+  }, React.createElement("div", { style: { fontSize: 40, marginBottom: 12 } }, "🔒"), React.createElement("div", { style: { fontSize: 16, color: "#e2e8f0", fontWeight: 600, marginBottom: 6 } }, "Accès suspendu"), React.createElement("div", { style: { fontSize: 13, maxWidth: 340 } }, "L'accès à votre compte NODAS a été suspendu. Contactez votre administrateur ou le support NODAS pour plus d'informations."), React.createElement("button", {
+    onClick: () => signOutUser(),
+    style: { ...btnStyle("#334155"), marginTop: 20 }
+  }, "Se déconnecter"));
   if (E || !c) return React.createElement("div", {
     style: {
       minHeight: "100vh",
@@ -13365,6 +14037,7 @@ function App() {
       seasons: c.seasons || [],
       paymentModes: c.paymentModes || [],
       menuItems: c.menuItems || [],
+      expenseCategories: c.expenseCategories || [],
       backupReminder: c.backupReminder || {
         enabled: !0,
         day: 1
@@ -13373,7 +14046,8 @@ function App() {
       clients: p,
       reservations: y,
       invoices: g,
-      maintenanceBlocks: R
+      maintenanceBlocks: R,
+      expenses: Exp
     },
     D = !I && N.backupReminder.enabled && (new Date).getDay() === N.backupReminder.day,
     T = [{
@@ -13404,6 +14078,10 @@ function App() {
       id: "restaurant",
       icon: "🍽️",
       label: "Restaurant"
+    }, {
+      id: "expenses",
+      icon: "💸",
+      label: "Dépenses"
     }, ...("admin" === w.role || "platformAdmin" === w.role) ? [{
       id: "settings",
       icon: "⚙️",
@@ -13640,11 +14318,13 @@ function App() {
     mob: mob
   }), "planning" === S && React.createElement(Planning, {
     hotelData: N,
-    setModal: C
+    setModal: C,
+    mob: mob
   }), "reservations" === S && React.createElement(Reservations, {
     hotelData: N,
     setModal: C,
-    user: w
+    user: w,
+    mob: mob
   }), "clients" === S && React.createElement(Clients, {
     hotelData: N,
     setModal: C,
@@ -13652,11 +14332,15 @@ function App() {
   }), "invoices" === S && React.createElement(Invoices, {
     hotelData: N,
     setModal: C,
-    user: w
+    user: w,
+    mob: mob
   }), "restaurant" === S && React.createElement(Restaurant, {
     hotelData: N,
     user: w,
     setModal: C
+  }), "expenses" === S && React.createElement(Depenses, {
+    hotelData: N,
+    user: w
   }), "settings" === S && ("admin" === w.role || "platformAdmin" === w.role) && React.createElement(Settings, {
     hotelData: N,
     user: w
@@ -13667,17 +14351,20 @@ function App() {
     hotelData: N,
     data: k.data,
     onClose: () => C(null),
-    user: w
+    user: w,
+    mob: mob
   }), "client" === k?.type && React.createElement(ClientModal, {
     hotelData: N,
     data: k.data,
     onClose: () => C(null),
-    user: w
+    user: w,
+    mob: mob
   }), "invoice" === k?.type && React.createElement(InvoiceModal, {
     hotelData: N,
     data: k.data,
     onClose: () => C(null),
-    user: w
+    user: w,
+    mob: mob
   }))
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
