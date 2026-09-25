@@ -13385,6 +13385,65 @@ function HotelDetailPanel({ hotelId, hotelName, onClose, onUpdated }) {
   );
 }
 
+function PlatformStats({ hotels }) {
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(!0);
+  useEffect(() => {
+    let cancelled = !1;
+    (async () => {
+      setLoading(!0);
+      try {
+        const results = await Promise.all(hotels.map(async h => {
+          const ref = db.collection("hotels").doc(h.id);
+          const [resaSnap, invSnap] = await Promise.all([ref.collection("reservations").get(), ref.collection("invoices").get()]);
+          let ca = 0;
+          invSnap.docs.forEach(d2 => { const data = d2.data(); if ("avoir" !== data.type && "remboursement" !== data.type) ca += (data.total || 0); });
+          return { reservations: resaSnap.size, ca };
+        }));
+        if (!cancelled) {
+          const totalReservations = results.reduce((s2, r) => s2 + r.reservations, 0);
+          const totalCA = results.reduce((s2, r) => s2 + r.ca, 0);
+          const parTier = {};
+          hotels.forEach(h => { const tk = h.tier || "non_definie"; parTier[tk] = (parTier[tk] || 0) + 1; });
+          setStats({
+            totalHotels: hotels.length,
+            activeHotels: hotels.filter(h => !h.disabled).length,
+            suspendedHotels: hotels.filter(h => h.disabled).length,
+            totalReservations, totalCA, parTier
+          });
+        }
+      } catch (err) {} finally { if (!cancelled) setLoading(!1); }
+    })();
+    return () => { cancelled = !0; };
+  }, [hotels]);
+
+  const tierLabels = { starter: "Starter", standard: "Standard", pro: "Pro", devis: "Sur devis", non_definie: "Non définie" };
+
+  if (loading || !stats) return React.createElement("div", { style: { color: "#64748b", padding: 20, textAlign: "center", fontSize: 12, marginBottom: 16 } }, "Calcul des statistiques…");
+
+  return React.createElement("div", { style: { marginBottom: 20 } },
+    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 } },
+      React.createElement("div", { style: { background: "#1e293b", borderRadius: 10, padding: 14, borderLeft: "3px solid #2563eb" } },
+        React.createElement("div", { style: { fontSize: 11, color: "#64748b" } }, "Hôtels actifs"),
+        React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#e2e8f0" } }, stats.activeHotels, " / ", stats.totalHotels)),
+      stats.suspendedHotels > 0 && React.createElement("div", { style: { background: "#1e293b", borderRadius: 10, padding: 14, borderLeft: "3px solid #dc2626" } },
+        React.createElement("div", { style: { fontSize: 11, color: "#64748b" } }, "Hôtels suspendus"),
+        React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#f87171" } }, stats.suspendedHotels)),
+      React.createElement("div", { style: { background: "#1e293b", borderRadius: 10, padding: 14, borderLeft: "3px solid #facc15" } },
+        React.createElement("div", { style: { fontSize: 11, color: "#64748b" } }, "Réservations totales"),
+        React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#e2e8f0" } }, fmt(stats.totalReservations))),
+      React.createElement("div", { style: { background: "#1e293b", borderRadius: 10, padding: 14, borderLeft: "3px solid #4ade80" } },
+        React.createElement("div", { style: { fontSize: 11, color: "#64748b" } }, "CA facturé (toutes plateformes)"),
+        React.createElement("div", { style: { fontSize: 22, fontWeight: 700, color: "#4ade80" } }, fmt(stats.totalCA), " F"))
+    ),
+    Object.keys(stats.parTier).length > 0 && React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+      Object.entries(stats.parTier).map(([k, v]) => React.createElement("span", {
+        key: k, style: { fontSize: 11, color: "#94a3b8", background: "#0f172a", borderRadius: 6, padding: "4px 10px" }
+      }, tierLabels[k] || k, " : ", React.createElement("b", null, v)))
+    )
+  );
+}
+
 function PlatformView({
   user: e,
   hotelData: t
@@ -13458,6 +13517,7 @@ function PlatformView({
         style: btnStyle(y ? "#334155" : "#2563eb")
       }, y ? "Annuler" : "+ Creer un hotel")
     ),
+    !l && a.length > 0 && React.createElement(PlatformStats, { hotels: a }),
     y && React.createElement("div", {
       style: {background: "#1e293b", borderRadius: 12, padding: 20, marginBottom: 20, border: "1px solid #334155"}
     },
